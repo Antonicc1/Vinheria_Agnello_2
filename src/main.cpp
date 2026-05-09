@@ -2,7 +2,7 @@
  *  VINHERIA AGNELLO - Sistema de Monitoramento Avancado
  *  ---------------------------------------------------------------------
  *  Placa: Arduino UNO R3 ou Nano (ambos ATmega328P - codigo identico)
- * 
+ *
  *  Ao ligar, o programa:
  *    1) Imprime no Serial @9600 baud todos os passos
  *    2) Pisca o LED em vermelho, verde e amarelo (1s cada)
@@ -52,21 +52,33 @@
 // Se o scan I2C mostrar 0x3F, mude esta linha para 0x3F
 #define LCD_ADDR 0x27
 
-// =================== LIMITES (conforme spec) =========================
-// Limites de cada zona (verde/amarelo/vermelho) para os 3 sensores.
-// Verde = ideal, amarelo = atencao, vermelho = alerta critico.
-// Os valores foram definidos pela especificacao do projeto Vinheria.
-const uint8_t  LDR_VERDE    = 10;    // Luz baixa = ideal (vinho gosta de escuro)
-const uint8_t  LDR_AMARELO  = 50;
-const uint16_t LDR_VERMELHO = 200;
+// =================== LIMITES (conforme spec atualizada) ==============
+// Cada sensor tem uma FAIXA verde ideal [GREEN_MIN..GREEN_MAX] e um teto
+// amarelo de tolerancia (YELLOW_MAX). Acima do teto amarelo = vermelho.
+// Valores abaixo do GREEN_MIN tambem caem em amarelo (deviacao da faixa
+// ideal, mas nao critico ainda) - lidado dentro de evalZone().
+//
+// Spec:
+//   Luz:   verde 0-50      | amarelo 51-200    | vermelho > 200
+//   Umid:  verde 30-45 %   | amarelo 46-60 %   | vermelho > 60 %
+//   Temp:  verde 20-25 C   | amarelo 26-30 C   | vermelho > 30 C
+//
+// Os limites de temperatura sao SEMPRE em Celsius. O DHT11 mede em C
+// e curT armazena em C; a conversao para Fahrenheit acontece apenas
+// em tempForDisplay() na hora de mostrar na tela. Isso garante que os
+// alertas disparem na mesma temperatura fisica independente da unidade
+// escolhida pelo usuario (25 C = 77 F, 30 C = 86 F).
+const uint8_t  LDR_GREEN_MIN   = 0;
+const uint8_t  LDR_GREEN_MAX   = 50;
+const uint16_t LDR_YELLOW_MAX  = 200;
 
-const uint8_t UMID_VERDE    = 30;    // Umidade ideal: ate 30%
-const uint8_t UMID_AMARELO  = 45;
-const uint8_t UMID_VERMELHO = 60;    
+const uint8_t  UMID_GREEN_MIN  = 30;
+const uint8_t  UMID_GREEN_MAX  = 45;
+const uint8_t  UMID_YELLOW_MAX = 60;
 
-const uint8_t TEMP_VERDE    = 20;    // Temperatura ideal: ate 20C
-const uint8_t TEMP_AMARELO  = 25;
-const uint8_t TEMP_VERMELHO = 30;
+const uint8_t  TEMP_GREEN_MIN  = 20;   // 20 C = 68 F
+const uint8_t  TEMP_GREEN_MAX  = 25;   // 25 C = 77 F
+const uint8_t  TEMP_YELLOW_MAX = 30;   // 30 C = 86 F
 
 const uint16_t BUZZ_AMARELO  = 500;  // Frequencia em Hz para alerta amarelo
 const uint16_t BUZZ_VERMELHO = 1000; // Frequencia mais aguda = mais urgente
@@ -175,19 +187,26 @@ byte chGrape  [8] = { 0b00000,0b01110,0b11111,0b11111,0b01110,0b00100,0b00100,0b
 byte chThermo [8] = { 0b00100,0b01010,0b01010,0b01110,0b01110,0b11111,0b11111,0b01110 }; // termometro
 byte chDrop   [8] = { 0b00100,0b00100,0b01010,0b10001,0b10001,0b10001,0b01110,0b00000 }; // gota d'agua
 byte chSun    [8] = { 0b00100,0b10101,0b01110,0b11011,0b01110,0b10101,0b00100,0b00000 }; // sol
-byte chCheck  [8] = { 0b00000,0b00001,0b00011,0b10110,0b11100,0b01000,0b00000,0b00000 }; // check OK
-byte chWarn   [8] = { 0b00000,0b00100,0b01110,0b01110,0b01010,0b11111,0b00100,0b00000 }; // triangulo de alerta
+byte chOk     [8] = { 0b00000,0b00001,0b00011,0b10110,0b11100,0b01000,0b00000,0b00000 }; // check (zona OK)
+byte chAlerta [8] = { 0b00000,0b00100,0b01110,0b01110,0b01010,0b11111,0b00100,0b00000 }; // triangulo (zona ALERTA)
+byte chCritico[8] = { 0b01110,0b11111,0b10101,0b11011,0b11111,0b01110,0b01010,0b00000 }; // caveira (zona CRITICO)
 
 // Nomes simbolicos para os indices da CGRAM. lcd.write(ICO_GRAPE) e
 // muito mais legivel que lcd.write((uint8_t)2).
-#define ICO_BOTTLE  0
-#define ICO_BOTTLE2 1
-#define ICO_GRAPE   2
-#define ICO_THERMO  3
-#define ICO_DROP    4
-#define ICO_SUN     5
-#define ICO_CHECK   6
-#define ICO_WARN    7
+//
+// O HD44780 so tem 8 slots de CGRAM e precisamos de 9 caracteres (3 da
+// animacao de boot + 3 icones de linha + 3 emojis de status). Truque:
+// o slot 1 e usado como ICO_BOTTLE2 durante a animacao de boot e depois
+// recarregado com chCritico, ja que BOTTLE2 nao e usado em runtime.
+#define ICO_BOTTLE   0
+#define ICO_BOTTLE2  1   // slot 1, valido apenas durante bootAnimation()
+#define ICO_CRITICO  1   // mesmo slot, recarregado pos-boot
+#define ICO_GRAPE    2
+#define ICO_THERMO   3
+#define ICO_DROP     4
+#define ICO_SUN      5
+#define ICO_OK       6
+#define ICO_ALERTA   7
 
 // =====================================================================
 // EEPROM
@@ -291,14 +310,17 @@ void sensorSample() {
   }
 }
 
-// Avalia em qual zona um valor esta:
-//   <= gLim          -> 0 (verde/ideal)
-//   gLim < v <= yLim -> 1 (amarelo/atencao)
-//   v > yLim         -> 2 (vermelho/alerta)
-uint8_t evalZone(float v, float gLim, float yLim) {
-  if (v <= gLim) return 0;
-  if (v <= yLim) return 1;
-  return 2;
+// Avalia em qual zona um valor esta, dada a faixa verde [gMin..gMax]
+// e o teto amarelo yMax:
+//   gMin <= v <= gMax           -> 0 (verde / ideal)
+//   v < gMin OU gMax < v <= yMax-> 1 (amarelo / atencao)
+//   v > yMax                    -> 2 (vermelho / alerta)
+// Como sensores fisicos nao retornam negativo (LDR 0-255, umid 0-100,
+// temp DHT11 0-50), na pratica "abaixo do gMin" sempre cai como amarelo.
+uint8_t evalZone(float v, float gMin, float gMax, float yMax) {
+  if (v >= gMin && v <= gMax) return 0;   // dentro da faixa ideal
+  if (v <= yMax)              return 1;   // fora do ideal mas toleravel
+  return 2;                                // alem do toleravel
 }
 
 // Fecha a janela de 10s: calcula medias, classifica em zonas e
@@ -312,16 +334,19 @@ void windowFinalize() {
   curH = sumH / nSamples;
   curL = sumL / nSamples;
 
-  uint8_t zT = evalZone(curT, TEMP_VERDE, TEMP_AMARELO);
-  uint8_t zH = evalZone(curH, UMID_VERDE, UMID_AMARELO);
-  uint8_t zL = evalZone(curL, LDR_VERDE,  LDR_AMARELO);
+  uint8_t zT = evalZone(curT, TEMP_GREEN_MIN, TEMP_GREEN_MAX, TEMP_YELLOW_MAX);
+  uint8_t zH = evalZone(curH, UMID_GREEN_MIN, UMID_GREEN_MAX, UMID_YELLOW_MAX);
+  uint8_t zL = evalZone(curL, LDR_GREEN_MIN,  LDR_GREEN_MAX,  LDR_YELLOW_MAX);
   curStatus = max(max(zT, zH), zL);     // pior zona = status global
 
   // Telemetria via Serial - util para debug e gravacao em Tinkercad/PC.
   Serial.print(F("[10s] T=")); Serial.print(curT, 1);
   Serial.print(F("C  U=")); Serial.print(curH, 1);
   Serial.print(F("%  L=")); Serial.print(curL);
-  Serial.print(F("/255  status=")); Serial.println(curStatus);
+  Serial.print(F("/255  zT=")); Serial.print(zT);
+  Serial.print(F(" zH="));      Serial.print(zH);
+  Serial.print(F(" zL="));      Serial.print(zL);
+  Serial.print(F(" status=")); Serial.println(curStatus);
 
   // Reseta acumuladores para a proxima janela.
   sumT = sumH = 0; sumL = 0; nSamples = 0;
@@ -346,13 +371,19 @@ void setBlue(bool on) {
 
 // Aplica o feedback visual+sonoro conforme o status atual:
 //   0 (verde)   -> LED verde, buzzer mudo
-//   1 (amarelo) -> LED amarelo, buzzer 500Hz (se habilitado)
+//   1 (amarelo) -> LED amarelo/ambar, buzzer 500Hz (se habilitado)
 //   2 (vermelho)-> LED vermelho, buzzer 1000Hz (se habilitado)
+//
+// Tuning do amarelo: LEDs verdes de modulos RGB tipicos sao ~2-3x mais
+// brilhantes que os vermelhos com o mesmo PWM, entao para o olho o canal
+// G "rouba" o show e o resultado parece esverdeado. Manter G baixo (~80)
+// faz o vermelho dominar e a mistura ler como amarelo/ambar de verdade.
+// Se ficar muito laranja, suba G; se voltar a parecer verde, abaixe.
 void alertApply() {
   switch (curStatus) {
     case 0: setRGB(0, 255); noTone(PIN_BUZZER); break;
     case 1:
-      setRGB(255, 180);   // R=255 + G=180 -> tom amarelo/ambar
+      setRGB(255, 80);    // R cheio + G fraco -> amarelo/ambar real
       cfg.buzzerOn ? tone(PIN_BUZZER, BUZZ_AMARELO) : noTone(PIN_BUZZER);
       break;
     case 2:
@@ -366,25 +397,29 @@ void alertApply() {
 // HELPERS DE STRING
 // =====================================================================
 
-// Retorna a string da zona no idioma atual, com padding para 9 caracteres
-// (assim sobrescreve completamente o slot de tela sem precisar limpar).
+// Retorna a string da zona no idioma atual, com padding para 7 caracteres
+// (sobrescreve completamente o slot de tela sem precisar limpar).
+// Os 7 chars cabem no layout do renderHome (icone + barra + status + emoji = 20).
 const char* zoneText(uint8_t z) {
   if (cfg.language == 0) {           // PT
-    if (z == 0) return "IDEAL    ";
-    if (z == 1) return "ATENCAO  ";
-    return            "ALERTA   ";
+    if (z == 0) return "OK     ";
+    if (z == 1) return "ALERTA ";
+    return            "CRITICO";
   } else if (cfg.language == 1) {    // EN
-    if (z == 0) return "IDEAL    ";
-    if (z == 1) return "WARNING  ";
-    return            "ALERT    ";
+    if (z == 0) return "OK     ";
+    if (z == 1) return "ALERT  ";
+    return            "DANGER ";
   } else {                            // ES
-    if (z == 0) return "OPTIMO   ";
-    if (z == 1) return "ATENCION ";
-    return            "ALERTA   ";
+    if (z == 0) return "OK     ";
+    if (z == 1) return "ALERTA ";
+    return            "CRITICO";
   }
 }
 
 // Converte Celsius para a unidade selecionada (C ou F).
+// IMPORTANTE: isso e SO para exibicao. A avaliacao de zona em evalZone()
+// sempre usa Celsius (curT), entao os alertas disparam na mesma temperatura
+// fisica independente do que o usuario escolheu mostrar na tela.
 float tempForDisplay(float c) {
   return (cfg.tempUnit == 1) ? (c * 9.0 / 5.0 + 32.0) : c;
 }
@@ -454,39 +489,79 @@ void bootAnimation() {
 // TELAS
 // =====================================================================
 
-// Tela principal (modo NORMAL). Mostra:
-//   linha 0: titulo + icone de status (check/warn)
-//   linha 1: data e hora
-//   linha 2: temperatura e umidade
-//   linha 3: luminosidade e zona textual
+// Helper que mapeia o "emoji" certo para cada zona.
+// Slot 1 vira CRITICO depois do boot (ver setup() / bootAnimation).
+uint8_t zoneEmoji(uint8_t z) {
+  if (z == 0) return ICO_OK;
+  if (z == 1) return ICO_ALERTA;
+  return ICO_CRITICO;
+}
+
+// Desenha uma linha de sensor com layout fixo de 20 colunas:
+//
+//   col:  0  1  2-9            10  11-17     18  19
+//   pos:  T  _  ########____   _   ALERTA_   _   ⚠
+//
+//   - col 0:    icone do sensor (ICO_THERMO/DROP/SUN)
+//   - cols 2-9: barra de 8 chars (9 niveis: 0/8 a 8/8 cells preenchidas)
+//                   uso 0xFF (full block, built-in do HD44780) e ' '
+//   - cols 11-17: texto da zona (7 chars, vindo de zoneText)
+//   - col 19:   emoji da zona
+//
+// O parametro pct e o percentual 0..100 que controla quantos chars da
+// barra ficam preenchidos. Maior pct = barra mais cheia.
+void drawSensorRow(uint8_t row, uint8_t lineIcon, uint8_t pct, uint8_t zone) {
+  lcd.setCursor(0, row);
+  lcd.write(lineIcon);                 // col 0
+  lcd.print(' ');                      // col 1
+
+  // Barra de 8 cells (cols 2-9). 0xFF = full block; ' ' = vazio.
+  uint8_t filled = (uint16_t)pct * 8 / 100;
+  if (filled > 8) filled = 8;
+  for (uint8_t i = 0; i < 8; i++) {
+    lcd.write(i < filled ? (uint8_t)0xFF : (uint8_t)' ');
+  }
+
+  lcd.print(' ');                      // col 10
+  lcd.print(zoneText(zone));           // cols 11-17 (7 chars padded)
+  lcd.print(' ');                      // col 18
+  lcd.write(zoneEmoji(zone));          // col 19
+}
+
+// Tela principal (modo NORMAL). Layout 20x4:
+//   linha 0: data e hora local
+//   linha 1: barra da temperatura  + status + emoji
+//   linha 2: barra da umidade      + status + emoji
+//   linha 3: barra da luminosidade + status + emoji
+//
+// Os percentuais das barras sao normalizados:
+//   Temp:  0-50C (range tipico do DHT11) -> 0-100%
+//   Umid:  ja em %, usa direto
+//   Luz:   0-255 (LDR ja normalizado)    -> 0-100%
 void renderHome() {
   if (!lcdOk) return;
-  lcd.setCursor(0, 0); lcd.write(ICO_GRAPE);
-  lcd.setCursor(2, 0); lcd.print(F("VINHERIA AGNELLO"));
-  lcd.setCursor(19, 0);
-  lcd.write(curStatus == 0 ? ICO_CHECK : ICO_WARN);
 
-  // Data/hora local formatada.
+  // Linha 0: data e hora (DD/MM/YYYY HH:MM:SS = 19 chars + 1 espaco = 20)
   RtcDateTime dt = nowLocal();
   char buf[21];
-  snprintf(buf, sizeof(buf), "%02d/%02d/%04d  %02d:%02d:%02d",
-           dt.Day(), dt.Month(), dt.Year(), dt.Hour(), dt.Minute(), dt.Second());
-  lcd.setCursor(0, 1); lcd.print(buf);
+  snprintf(buf, sizeof(buf), "%02d/%02d/%04d %02d:%02d:%02d ",
+           dt.Day(), dt.Month(), dt.Year(),
+           dt.Hour(), dt.Minute(), dt.Second());
+  lcd.setCursor(0, 0); lcd.print(buf);
 
-  // Temperatura e umidade. dtostrf converte float em string com largura
-  // fixa - sprintf nao suporta %f no AVR por economia de flash.
-  char tb[6]; dtostrf(tempForDisplay(curT), 4, 1, tb);
-  char hb[6]; dtostrf(curH, 4, 1, hb);
-  lcd.setCursor(0, 2); lcd.write(ICO_THERMO);
-  lcd.setCursor(1, 2); lcd.print(tb); lcd.print(tempUnitChar());
-  lcd.setCursor(10, 2); lcd.write(ICO_DROP);
-  lcd.setCursor(11, 2); lcd.print(hb); lcd.print('%'); lcd.print(F("  "));
+  // Avalia as zonas de cada sensor com a faixa [min..max] da spec.
+  uint8_t zT = evalZone(curT, TEMP_GREEN_MIN, TEMP_GREEN_MAX, TEMP_YELLOW_MAX);
+  uint8_t zH = evalZone(curH, UMID_GREEN_MIN, UMID_GREEN_MAX, UMID_YELLOW_MAX);
+  uint8_t zL = evalZone(curL, LDR_GREEN_MIN,  LDR_GREEN_MAX,  LDR_YELLOW_MAX);
 
-  // Luminosidade + texto da zona.
-  lcd.setCursor(0, 3); lcd.write(ICO_SUN);
-  snprintf(buf, sizeof(buf), "%3u/255 ", curL);
-  lcd.setCursor(1, 3); lcd.print(buf);
-  lcd.setCursor(10, 3); lcd.print(zoneText(curStatus));
+  // Calcula percentuais 0..100 para as barras (limitados ao range valido).
+  uint8_t pctT = constrain((int16_t)(curT * 2.0f), 0, 100);            // 0-50C -> 0-100%
+  uint8_t pctH = constrain((int16_t)curH, 0, 100);                     // ja %
+  uint8_t pctL = constrain((int16_t)((uint16_t)curL * 100 / 255), 0, 100); // 0-255 -> 0-100%
+
+  drawSensorRow(1, ICO_THERMO, pctT, zT);
+  drawSensorRow(2, ICO_DROP,   pctH, zH);
+  drawSensorRow(3, ICO_SUN,    pctL, zL);
 }
 
 // Retorna o label do item de menu no idioma atual.
@@ -635,6 +710,8 @@ void renderLogs() {
   lcd.setCursor(0, 1); lcd.print(buf); lcd.print(F("    "));
 
   // Linha 2: temperatura, umidade, luminosidade do log.
+  // O log armazena temperatura em Celsius (int8_t); convertemos para a
+  // unidade escolhida apenas na exibicao.
   float tDisp = tempForDisplay(e.tempC);
   char tb[6]; dtostrf(tDisp, 4, 1, tb);
   snprintf(buf, sizeof(buf), "T:%s%c U:%2u%% L:%3u",
@@ -642,8 +719,10 @@ void renderLogs() {
   lcd.setCursor(0, 2); lcd.print(buf);
 
   // Linha 3: zona textual do log.
+  // "Status: " (8) + zoneText (7) = 15 chars; 5 chars de padding completam a linha.
   lcd.setCursor(0, 3); lcd.print(F("Status: "));
   lcd.print(zoneText(e.status));
+  lcd.print(F("     "));
 }
 
 // =====================================================================
@@ -655,43 +734,38 @@ bool btnPressed(uint8_t pin) { return digitalRead(pin) == LOW; }
 
 // Le os 4 botoes e despacha a acao conforme o modo do app.
 // Implementa debounce simples por tempo (180ms entre eventos).
+//
+// Resumo do mapeamento por modo:
+//   NORMAL: CANCEL abre o menu;             OK nao tem efeito.
+//   MENU:   OK confirma item selecionado;   CANCEL volta pra leitura.
+//   LOGS:   UP/DOWN navegam entre logs;     CANCEL volta pro menu.
 void handleButtons() {
   if (millis() - tLastBtn < 180) return;     // debounce
 
   if (btnPressed(PIN_BTN_OK)) {
     tLastBtn = millis();
     Serial.println(F("[BTN] OK"));
-    if (appMode == MODE_NORMAL) {
-      // No modo normal, OK abre o menu.
-      appMode = MODE_MENU; menuIdx = 0;
-      if (lcdOk) lcd.clear();
-    } else if (appMode == MODE_MENU) {
+    if (appMode == MODE_MENU) {
       // No menu, OK confirma o item selecionado.
       menuAction(0);
     }
+    // No NORMAL e LOGS, OK e ignorado de proposito.
   }
   else if (btnPressed(PIN_BTN_CAN)) {
     tLastBtn = millis();
     Serial.println(F("[BTN] CANCEL"));
-    if (appMode == MODE_MENU) {
-      // CANCEL no menu volta para a tela principal.
+    if (appMode == MODE_NORMAL) {
+      // CANCEL no modo de leitura abre o menu.
+      appMode = MODE_MENU; menuIdx = 0;
+      if (lcdOk) lcd.clear();
+    } else if (appMode == MODE_MENU) {
+      // CANCEL no menu volta para a tela principal (modo de leitura).
       cfgSave(); appMode = MODE_NORMAL;
       if (lcdOk) lcd.clear();
     } else if (appMode == MODE_LOGS) {
       // CANCEL nos logs volta para o menu.
       appMode = MODE_MENU;
       if (lcdOk) lcd.clear();
-    } else if (appMode == MODE_NORMAL && btnPressed(PIN_BTN_OK)) {
-      // Atalho: CANCEL+OK simultaneos no modo normal limpa os logs.
-      // OBS: este branch nunca sera atingido pq o if (PIN_BTN_OK) la em
-      // cima ja teria pego primeiro. Bug latente / dead code.
-      logClearAll();
-      Serial.println(F("[INFO] Logs limpos"));
-      if (lcdOk) {
-        lcd.clear();
-        lcd.setCursor(0, 1); lcd.print(F("  Logs limpos!"));
-        delay(900); lcd.clear();
-      }
     }
   }
   else if (btnPressed(PIN_BTN_UP)) {
@@ -772,8 +846,8 @@ void setup() {
   lcd.createChar(ICO_THERMO,  chThermo);
   lcd.createChar(ICO_DROP,    chDrop);
   lcd.createChar(ICO_SUN,     chSun);
-  lcd.createChar(ICO_CHECK,   chCheck);
-  lcd.createChar(ICO_WARN,    chWarn);
+  lcd.createChar(ICO_OK,      chOk);
+  lcd.createChar(ICO_ALERTA,  chAlerta);
   lcdOk = true;     // se travou aqui, e wiring/endereco
   Serial.println(F("OK"));
 
@@ -850,6 +924,11 @@ void setup() {
   // ---- Animacao de boot ----
   Serial.println(F("\nIniciando animacao de boot...\n"));
   bootAnimation();
+
+  // Pos-boot: o slot 1 (que segurou ICO_BOTTLE2 durante a animacao) e
+  // recarregado com chCritico para virar o emoji da zona critica usado
+  // no renderHome. BOTTLE2 nao e mais necessario apos esse ponto.
+  lcd.createChar(ICO_CRITICO, chCritico);
 
   // Comeca direto na tela de configuracao (usuario precisa apertar OK ou
   // CANCEL para entrar no modo de monitoramento)
