@@ -474,7 +474,17 @@ void bootAnimation() {
   }
 
   // Fase 3: subtitulo + animacao da garrafa piscando.
-  lcd.setCursor(2, 2); lcd.print(F("Sistema de Monit."));
+  // O subtitulo e escrito letra-por-letra (igual fase 2) em vez de um
+  // unico lcd.print() longo. Isso evita um glitch visual onde algumas
+  // versoes da LiquidCrystal_I2C truncam strings longas devido a timing
+  // do latch do PCF8574 - sintoma: "Sistema d" aparece em vez do texto
+  // completo.
+  const char* t2 = "Sistema de Monit.";
+  for (uint8_t i = 0; i < 17; i++) {
+    lcd.setCursor(2 + i, 2);
+    lcd.print(t2[i]);
+    delay(30);
+  }
   for (uint8_t f = 0; f < 8; f++) {
     lcd.setCursor(0, 3);  lcd.write(ICO_GRAPE);
     lcd.setCursor(19, 3); lcd.write(ICO_GRAPE);
