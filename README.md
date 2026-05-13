@@ -1,164 +1,112 @@
 # 🍷 Vinheria Agnello — Sistema de Monitoramento Avançado
 
-Sistema embarcado para monitoramento ambiental de uma vinheria, projetado para manter as condições ideais de armazenamento das garrafas: **luminosidade baixa**, **umidade controlada** e **temperatura amena**. Quando algum dos parâmetros sai da faixa ideal, o sistema sinaliza visual e sonoramente o nível de alerta.
+> Sistema embarcado para monitoramento contínuo das condições ambientais de uma adega: temperatura, umidade e luminosidade, com alertas em tempo real, log persistente e interface multilíngue.
 
-> Projeto desenvolvido para a disciplina de **Edge Computing & Computer Systems** da **FIAP**.
+Projeto desenvolvido para o curso de **Edge Computing & Computer Systems** da **FIAP**, evoluído ao longo de várias entregas — partindo de um circuito básico (LDR + LEDs) até o sistema completo descrito aqui.
 
 ---
 
-## 🛠️ Ambiente de Desenvolvimento
+## 📑 Sumário
 
-Este projeto foi inteiramente desenvolvido utilizando a extensão **[PlatformIO IDE](https://platformio.org/install/ide?install=vscode)** do **Visual Studio Code**. Toda a estrutura de pastas (`src/`, `lib/`, `include/`, `test/`, `.pio/`) e o arquivo `platformio.ini` seguem o padrão dessa extensão.
-
-A configuração do projeto inclusive recomenda automaticamente a extensão ao abrir a pasta no VS Code (veja `.vscode/extensions.json`).
-
-### Por que PlatformIO em vez da Arduino IDE?
-
-- Gerenciamento automático de dependências via `platformio.ini`
-- Build mais rápido e com mensagens de erro melhores
-- IntelliSense completo no C++ (auto-complete, navegação, refactoring)
-- Mesmo projeto compila para UNO ou Nano sem alterações
-- Integração nativa com Git e VS Code
+- [Funcionalidades](#-funcionalidades)
+- [Hardware](#-hardware)
+- [Pinagem](#-pinagem)
+- [Bibliotecas](#-bibliotecas-necessárias)
+- [Como compilar](#%EF%B8%8F-como-compilar-e-gravar)
+- [Como usar](#-como-usar)
+- [Faixas de alerta](#-faixas-de-alerta)
+- [Detalhes técnicos](#-detalhes-técnicos)
+- [Estrutura do código](#-estrutura-do-código)
+- [Troubleshooting](#-troubleshooting)
+- [Autor](#-autor)
 
 ---
 
 ## ✨ Funcionalidades
 
-- 📊 **Monitoramento contínuo** de temperatura, umidade e luminosidade
-- 🚦 **Sistema de alertas em três zonas** (Verde / Amarelo / Vermelho) com lógica *worst-of-3* (o pior dos três sensores define o estado global)
-- 📈 **Média móvel de 10 segundos** para suavizar leituras ruidosas
-- 💡 **Feedback visual** via LED RGB (verde / amarelo / vermelho)
-- 🔊 **Feedback sonoro** via buzzer com frequências distintas para cada nível de alerta
-- 🖥️ **Interface em LCD 20x4 I2C** com ícones customizados (garrafa, uva, termômetro, gota, sol, check, alerta)
-- 🎬 **Animação de boot** com uvas convergindo e título letra-por-letra
-- 🕐 **RTC DS1302** com fuso horário configurável e fallback via `millis()` se o módulo falhar
-- 💾 **Logs persistentes em EEPROM** (ring buffer circular com até **124 registros**)
-- ⚙️ **Menu de configuração** navegável com 6 itens
-- 🌍 **Suporte a 3 idiomas**: Português, Inglês e Espanhol
-- 🌡️ **Unidade de temperatura configurável**: Celsius ou Fahrenheit
-- 🔇 **Buzzer silenciável** pelo menu
-- 🎯 **Auto-calibração do LDR** baseada nas condições reais do ambiente
+- **Monitoramento contínuo** de 3 grandezas físicas:
+  - 🌡️ Temperatura (DHT11)
+  - 💧 Umidade relativa (DHT11)
+  - ☀️ Luminosidade (LDR com auto-calibração)
+- **Média móvel de 10 segundos** — suaviza ruído dos sensores e dispara alertas só em mudanças sustentadas.
+- **Sistema de alerta em 3 zonas** (verde / amarelo / vermelho) com feedback:
+  - LED RGB muda de cor conforme severidade
+  - Buzzer toca em frequências distintas (500 Hz / 1000 Hz)
+- **LCD 20x4 I²C** com:
+  - Tela principal com barras de progresso, ícones customizados e relógio em tempo real
+  - Animação de boot com personagens da CGRAM (uvas, garrafa, etc.)
+  - Menu de configuração e visualizador de logs
+- **Menu multilíngue** (Português / Inglês / Espanhol) navegável por joystick.
+- **Configuração persistente** na EEPROM: idioma, fuso horário, unidade de temperatura (°C/°F), buzzer on/off.
+- **Log circular** na EEPROM (ring buffer de até 124 entradas) com timestamp do RTC.
+- **RTC DS1302** com bateria de backup mantém data/hora mesmo sem energia.
+- **Telemetria via Serial** (9600 baud) para debug e captura em PC.
 
 ---
 
-## 🧰 Componentes Utilizados
+## 🧰 Hardware
 
-| Componente | Quantidade | Função |
+| Componente | Modelo | Quantidade |
 |---|---|---|
-| Arduino UNO R3 *ou* Nano (ATmega328P) | 1 | Microcontrolador |
-| Sensor DHT11 | 1 | Temperatura e umidade |
-| Sensor LDR | 1 | Luminosidade |
-| LCD 20x4 com módulo I2C (PCF8574) | 1 | Display |
-| RTC DS1302 | 1 | Relógio em tempo real |
-| LED RGB (cátodo comum) | 1 | Indicador visual |
-| Buzzer (ativo ou passivo) | 1 | Indicador sonoro |
-| Botões (push button) | 4 | Navegação no menu |
-| Resistor 10 kΩ | 1 | Pull-up do DHT11 |
-| Resistores 220 Ω | 3 | Limitadores do LED RGB |
-| Resistor 10 kΩ | 1 | Divisor de tensão do LDR |
-| Protoboard + jumpers | — | Montagem do circuito |
+| Microcontrolador | Arduino UNO R3 / Nano (ATmega328P) | 1 |
+| Display LCD | 20x4 com backpack I²C (PCF8574) | 1 |
+| Sensor temp/umidade | DHT11 | 1 |
+| Sensor de luz | LDR + resistor 10 kΩ (divisor) | 1 |
+| RTC | Módulo DS1302 + bateria CR2032 | 1 |
+| LED RGB | Cátodo comum (com resistores 220 Ω) | 1 |
+| Buzzer | Ativo ou passivo (controlado por `tone()`) | 1 |
+| Joystick analógico | KY-023 ou equivalente | 1 |
+| Botões | Push-button momentâneo | 2 (OK, Cancel) |
+| Resistor pull-up | 10 kΩ para o DHT11 | 1 |
+| Protoboard + jumpers | — | — |
 
 ---
 
-## 📍 Pinagem
+## 🔌 Pinagem
 
-### Periféricos digitais e analógicos
+### Digital
 
-| Pino | Componente | Observação |
+| Pino | Função | Observação |
 |---|---|---|
-| `D2` | DHT11 (data) | Precisa de pull-up de 10 kΩ |
-| `D3` | Botão UP | `INPUT_PULLUP` |
-| `D4` | Botão DOWN | `INPUT_PULLUP` |
-| `D5` | Botão OK | `INPUT_PULLUP` |
-| `D6` | Botão CANCEL | `INPUT_PULLUP` |
-| `D7` | LED RGB — canal **azul** | Digital ON/OFF (sem PWM) |
-| `D8` | Buzzer | Controlado por `tone()` |
-| `D9` | LED RGB — canal **vermelho** | PWM |
-| `D10` | LED RGB — canal **verde** | PWM |
-| `A0` | LDR | Leitura analógica |
+| D2 | DHT11 (data) | Pull-up 10 kΩ para +5 V |
+| D3, D4 | **Livres** | (eram os antigos botões Up/Down) |
+| D5 | Botão OK | `INPUT_PULLUP` — conecta a GND quando pressionado |
+| D6 | Botão Cancel | `INPUT_PULLUP` |
+| D7 | LED RGB — canal **B** | Digital (sem PWM por causa do `tone()`) |
+| D8 | Buzzer | Controlado por `tone()` (ocupa Timer2) |
+| D9 | LED RGB — canal **R** | PWM (Timer1) |
+| D10 | LED RGB — canal **G** | PWM (Timer1) |
+| D11 | RTC DS1302 — SCLK | |
+| D12 | RTC DS1302 — I/O | Linha bidirecional |
+| D13 | RTC DS1302 — CE | Compartilhado com LED onboard |
 
-### RTC DS1302 (protocolo de 3 fios — **NÃO é I2C**)
+### Analógico
 
 | Pino | Função |
 |---|---|
-| `D11` | SCLK (clock) |
-| `D12` | I/O (dados bidirecionais) |
-| `D13` | CE (chip enable — também é o LED onboard) |
+| A0 | LDR (divisor com resistor 10 kΩ) |
+| A1 | Joystick — eixo **Y** (VRy) |
 
-### Barramento I2C (LCD)
+> **Nota sobre o joystick:** apenas o eixo Y é usado, para navegação Up/Down. VRx e SW ficam livres — podem ser conectados depois para funcionalidades extras (ex: ajuste fino de valores no menu).
 
-| Pino | Função |
-|---|---|
-| `A4` | SDA |
-| `A5` | SCL |
-
-> 💡 O LCD tipicamente fica no endereço **`0x27`**. Se o scan I2C de boot mostrar **`0x3F`**, altere a constante `LCD_ADDR` no `main.cpp`.
-
-> ⚠️ O **DS1302 NÃO aparece no scan I2C** porque usa um protocolo serial próprio de 3 fios — isso é normal e esperado.
+> **Nota sobre o DS1302:** ele **não é I²C**. Usa protocolo serial proprietário de 3 fios, por isso não aparece em scans I²C.
 
 ---
 
-## 🚦 Limites de Alerta
+## 📚 Bibliotecas necessárias
 
-| Sensor | 🟢 Verde (Ideal) | 🟡 Amarelo (Atenção) | 🔴 Vermelho (Alerta) |
-|---|---|---|---|
-| **Luminosidade** (0–255) | ≤ 10 | ≤ 50 | > 50 |
-| **Umidade** (%) | ≤ 30 | ≤ 45 | > 45 |
-| **Temperatura** (°C) | ≤ 20 | ≤ 25 | > 25 |
+Instale pela IDE Arduino (Gerenciador de Bibliotecas) ou via PlatformIO:
 
-| Status | LED | Buzzer |
+| Biblioteca | Autor | Uso |
 |---|---|---|
-| 🟢 Verde | Verde | Mudo |
-| 🟡 Amarelo | Amarelo (R+G) | 500 Hz |
-| 🔴 Vermelho | Vermelho | 1000 Hz |
-| ⚙️ Menu | Violeta (R+B) | Mudo |
+| `LiquidCrystal_I2C` | Frank de Brabander | Driver do LCD I²C |
+| `DHT sensor library` | Adafruit | Leitura do DHT11 |
+| `Adafruit Unified Sensor` | Adafruit | Dependência do DHT |
+| `Rtc by Makuna` | Michael C. Miller | Driver do DS1302 |
 
-A regra é **worst-of-3**: o sistema sempre exibe o status do pior dos três sensores. Por exemplo, se a temperatura está verde mas a umidade está vermelha, o status global é vermelho.
+`Wire.h` e `EEPROM.h` já vêm com o core do Arduino.
 
----
-
-## 🎮 Controles e Navegação
-
-| Botão | Tela Principal | Menu | Visualizar Logs |
-|---|---|---|---|
-| **OK** | Abre o menu | Confirma / altera o valor | — |
-| **CANCEL** | — | Volta para a tela principal | Volta ao menu |
-| **UP** | — | Item anterior (com wrap-around) | Log mais antigo |
-| **DOWN** | — | Próximo item (com wrap-around) | Log mais recente |
-
-### Itens do menu
-
-1. **UTC offset** — fuso horário (-12 a +14, padrão `-3` para Brasil)
-2. **Unidade de temperatura** — Celsius / Fahrenheit
-3. **Idioma** — Português / English / Español
-4. **Buzzer** — ON / OFF
-5. **Ver logs** — abre a tela de visualização da EEPROM
-6. **Sair** — retorna à tela principal
-
-Todas as alterações são **persistidas imediatamente na EEPROM**.
-
----
-
-## 📁 Estrutura do Projeto
-
-```
-Vinheria_Agnello/
-├── .pio/                    # Build outputs e libs baixadas (auto-gerado)
-│   └── libdeps/
-│       └── nanoatmega328/   # Bibliotecas instaladas pelo PlatformIO
-├── .vscode/                 # Config do VS Code (PlatformIO recomendado)
-├── include/                 # Headers próprios (vazio neste projeto)
-├── lib/                     # Bibliotecas locais (vazio neste projeto)
-├── src/
-│   └── main.cpp             # Código principal
-├── test/                    # Testes unitários (não utilizado)
-├── platformio.ini           # Configuração do PlatformIO
-└── README.md                # Este arquivo
-```
-
----
-
-## ⚙️ Configuração do `platformio.ini`
+### `platformio.ini` de referência
 
 ```ini
 [env:nanoatmega328]
@@ -166,96 +114,258 @@ platform = atmelavr
 board = nanoatmega328
 framework = arduino
 monitor_speed = 9600
-lib_deps = 
-    marcoschwartz/LiquidCrystal_I2C@^1.1.4
-    adafruit/DHT sensor library@^1.4.7
-    makuna/RTC@^2.5.0
+lib_deps =
+    marcoschwartz/LiquidCrystal_I2C
+    adafruit/DHT sensor library
+    adafruit/Adafruit Unified Sensor
+    Makuna/Rtc
 ```
-
-> 🔁 Para usar **Arduino UNO** em vez do Nano, basta trocar `board = nanoatmega328` por `board = uno`. O código é idêntico para ambos (mesmo ATmega328P).
 
 ---
 
-## 🚀 Como Rodar o Projeto
+## ⚙️ Como compilar e gravar
 
-### Pré-requisitos
+### Arduino IDE
 
-1. Instalar o **[Visual Studio Code](https://code.visualstudio.com/)**
-2. Instalar a extensão **[PlatformIO IDE](https://marketplace.visualstudio.com/items?itemName=platformio.platformio-ide)** dentro do VS Code
+1. Instale as bibliotecas listadas acima.
+2. Selecione **Tools → Board → Arduino Nano** (ou UNO).
+3. **Tools → Processor → ATmega328P** (ou *Old Bootloader* se o Nano for clone antigo).
+4. Selecione a porta correta em **Tools → Port**.
+5. **Sketch → Upload** (Ctrl+U).
 
-### Passos
-
-1. **Clonar / abrir** o projeto:
-   ```bash
-   git clone <url-do-repo>
-   cd Vinheria_Agnello
-   code .
-   ```
-
-2. Aguardar o PlatformIO **baixar automaticamente** as dependências listadas em `platformio.ini` (`LiquidCrystal_I2C`, `DHT sensor library`, `RTC`).
-
-3. **Conectar** o Arduino via USB.
-
-4. Na barra inferior do VS Code, clicar em:
-   - `✓` (**Build**) — compila o código
-   - `→` (**Upload**) — envia para a placa
-   - 🔌 (**Serial Monitor**) — abre o terminal serial em `9600 baud`
-
-### Ou pela linha de comando
+### PlatformIO
 
 ```bash
-pio run                  # Build
-pio run --target upload  # Upload
-pio device monitor       # Serial monitor
+pio run -t upload
+pio device monitor
+```
+
+> Após o **primeiro upload**, o RTC é sincronizado com `__DATE__/__TIME__` do build. Se a hora estiver errada, recompile e regrave.
+
+---
+
+## 🕹️ Como usar
+
+### Boot
+
+Ao ligar, o sistema:
+1. Imprime no Serial cada etapa de inicialização
+2. Inicializa LCD, EEPROM, joystick, DHT11 e RTC
+3. Toca a animação de boot (uvas, título, garrafa)
+4. Entra direto no **menu de configuração**
+
+### Controles
+
+| Controle | Ação |
+|---|---|
+| 🕹️ Joystick ↑ | Item anterior (menu) / log anterior |
+| 🕹️ Joystick ↓ | Próximo item (menu) / próximo log |
+| 🔘 OK | Confirma / entra / altera valor |
+| 🔘 Cancel | Volta ao modo anterior |
+
+Segurar o joystick = auto-repeat (~5 itens/segundo).
+
+### Fluxo entre telas
+
+```
+   ┌─────────────────┐
+   │   MENU (boot)   │ ◄────── Cancel ──────┐
+   └────────┬────────┘                       │
+            │ Cancel                         │
+            ▼                                │
+   ┌─────────────────┐         OK em        │
+   │  NORMAL (home)  │       "Ver logs"     │
+   └────────┬────────┘                       │
+            │ Cancel                         │
+            └──────► volta ao MENU           │
+                          │                  │
+                          ▼                  │
+                  ┌─────────────────┐        │
+                  │      LOGS       │ ───────┘
+                  └─────────────────┘
+```
+
+### Tela principal (modo NORMAL)
+
+```
+┌────────────────────┐
+│13/05/2026 14:32:01 │  ← Data e hora local
+│🌡 ████████ OK     ✓│  ← Temperatura
+│💧 ██████   ALERTA ⚠│  ← Umidade
+│☀ ██       OK     ✓│  ← Luminosidade
+└────────────────────┘
+```
+
+### Menu de configuração
+
+| Item | Valores | Ação no OK |
+|---|---|---|
+| UTC offset | -12 a +14 | Incrementa em 1 (wrap) |
+| Unidade temp | C / F | Alterna |
+| Idioma | PT / EN / ES | Cicla |
+| Buzzer | ON / OFF | Alterna |
+| Ver logs | — | Abre tela de logs |
+| Sair | — | Volta ao modo NORMAL |
+
+Qualquer alteração é gravada **imediatamente** na EEPROM.
+
+---
+
+## 🚨 Faixas de alerta
+
+Conforme spec do projeto. As faixas de temperatura são sempre avaliadas em **Celsius** (a conversão para Fahrenheit só afeta a exibição).
+
+| Sensor | 🟢 Verde (ideal) | 🟡 Amarelo (atenção) | 🔴 Vermelho (crítico) |
+|---|---|---|---|
+| **Temperatura** | 20 – 25 °C | 26 – 30 °C | > 30 °C |
+| **Umidade** | 30 – 45 % | 46 – 60 % | > 60 % |
+| **Luminosidade** | 0 – 50 | 51 – 200 | > 200 |
+
+> O **status global** é o pior caso entre os 3 sensores (`worst-of-3`). Se temperatura está OK mas umidade está crítica, o LED fica vermelho e o buzzer toca.
+
+### Feedback por zona
+
+| Zona | LED RGB | Buzzer |
+|---|---|---|
+| 🟢 Verde | Verde | Silencioso |
+| 🟡 Amarelo | Âmbar (R=255, G=80) | 500 Hz |
+| 🔴 Vermelho | Vermelho puro | 1000 Hz |
+| Menu | Violeta (R+B) | Silencioso |
+
+---
+
+## 🔬 Detalhes técnicos
+
+### Janela de média móvel (10 s)
+
+A cada 1 s os sensores são amostrados e os valores acumulados. A cada 10 s, calcula-se a média e dispara o alerta. Isso:
+- **Filtra ruído** dos sensores (especialmente do LDR, que oscila bastante)
+- **Evita falsos alertas** por leituras pontuais (uma porta abrindo por 2 s não dispara o buzzer)
+- **Descarta NaN** do DHT11 (que falha em ~5 % das leituras)
+
+### Ring buffer de logs na EEPROM
+
+Layout da EEPROM (1024 bytes do ATmega328P):
+
+```
+[0..15]    → Settings (struct cfg, 16 bytes)
+[16..17]   → Contador de logs (uint16)
+[18..19]   → Head do ring buffer (uint16)
+[20..31]   → Reserva/padding
+[32..1023] → Logs (124 entradas × 8 bytes)
+```
+
+Cada `LogEntry` (8 bytes):
+
+```c
+struct LogEntry {
+  uint32_t ts;       // Timestamp (epoch 2000 do RtcByMakuna)
+  int8_t   tempC;    // Temperatura em Celsius
+  uint8_t  humid;    // Umidade %
+  uint8_t  ldr;      // Luminosidade 0-255
+  uint8_t  status;   // Zona consolidada
+};
+```
+
+Quando o buffer enche, o log mais antigo é sobrescrito (FIFO).
+
+### Truque dos 8 slots de CGRAM
+
+O HD44780 só permite **8 caracteres customizados**, mas o projeto usa **9**:
+- 3 da animação de boot (garrafa cheia, garrafa frame 2, uva)
+- 3 ícones de linha (termômetro, gota, sol)
+- 3 emojis de status (OK, alerta, crítico)
+
+**Solução:** o slot 1 segura `BOTTLE2` durante a animação de boot e depois é **recarregado** com `chCritico` (já que `BOTTLE2` não é mais usado em runtime).
+
+### Auto-calibração do LDR
+
+Em vez de mapear `0..1023 → 0..255` direto, o código aprende dinamicamente o **range real** do ambiente:
+
+- Toda leitura atualiza `ldrRawMin` e `ldrRawMax`
+- Quando o range observado ≥ 50, o mapeamento usa esses valores como referência
+- A calibração é persistida na EEPROM
+
+Isso dá muito mais **resolução prática** — uma adega que varia entre 100 e 400 no raw vai usar toda a faixa 0-255, em vez de só 25-100.
+
+### RTC sempre em UTC
+
+O DS1302 armazena timestamps em **UTC**. O offset de fuso (configurável no menu) é aplicado **apenas na exibição** via `nowLocal()`. Isso significa:
+- Mudar o fuso no menu não desloca os logs antigos
+- Logs continuam comparáveis mesmo após mudança de fuso
+
+### Mapa de Timers
+
+Conflito de timers do ATmega328P:
+- **Timer0** → `millis()` / `delay()` / `micros()`
+- **Timer1** → PWM nos pinos 9 e 10 (LED R e G)
+- **Timer2** → `tone()` no buzzer (pino 8)
+
+Como o `tone()` ocupa Timer2 (que também controla PWM dos pinos 3 e 11), o canal **B** do LED RGB fica em D7 como digital ON/OFF puro, sem fade. Por isso o "violeta" do menu é só R+B simples.
+
+---
+
+## 📁 Estrutura do código
+
+```
+vinheria_agnello.ino
+├── Bibliotecas
+├── Pinagem (defines)
+├── Limites de zona (consts)
+├── Layout EEPROM
+├── Tipos (Settings, LogEntry)
+├── Objetos (lcd, dht, rtc)
+├── Estado global
+├── Caracteres CGRAM
+│
+├── EEPROM
+│   ├── cfgSave / cfgLoad
+│   └── logWrite / logRead / logClearAll
+│
+├── Sensores
+│   ├── readLDR              (com auto-calibração)
+│   ├── sensorSample         (amostra a cada 1 s)
+│   ├── evalZone             (classifica em verde/amarelo/vermelho)
+│   └── windowFinalize       (consolida janela de 10 s)
+│
+├── LED + Buzzer
+│   ├── setRGB / setBlue
+│   └── alertApply
+│
+├── Helpers
+│   ├── zoneText             (multilíngue)
+│   ├── tempForDisplay       (conversão C/F)
+│   └── nowUnix / nowLocal   (timestamp UTC vs local)
+│
+├── Boot animation
+├── Telas
+│   ├── renderHome
+│   ├── renderMenu
+│   └── renderLogs
+│
+├── Botões + Joystick
+│   ├── joyDir               (-1, 0, +1)
+│   └── handleButtons        (debounce + dispatch)
+│
+└── setup() / loop()
 ```
 
 ---
 
-## 🔄 Fluxo de Execução
+## 🔧 Troubleshooting
 
-1. **Boot** — pisca o LED em vermelho/verde/amarelo, bipa o buzzer 2x, faz scan I2C, inicializa LCD, EEPROM, DHT11 e RTC. Falhas viram avisos não-fatais.
-2. **Animação de abertura** — uvas convergindo, título letra-por-letra, garrafa "respirando".
-3. **Modo Menu** *(estado inicial)* — usuário precisa apertar OK ou CANCEL para começar a monitorar.
-4. **Modo Normal** — loop principal:
-   - A cada **1s**: amostra os 3 sensores
-   - A cada **10s**: consolida média e atualiza o alerta
-   - A cada **60s** *(configurável)*: grava log na EEPROM
-   - A cada **300ms**: redesenha a tela (~3 FPS)
-
----
-
-## 💾 Layout da EEPROM (1024 bytes do ATmega328P)
-
-| Endereço | Tamanho | Conteúdo |
+| Sintoma | Causa provável | Solução |
 |---|---|---|
-| `0..15` | 16 B | Struct `Settings` (configurações) |
-| `16..17` | 2 B | Contador de logs válidos |
-| `18..19` | 2 B | Head do ring buffer |
-| `20..31` | 12 B | Reserva / padding |
-| `32..1023` | 992 B | **124 logs** de 8 bytes (ring buffer circular) |
-
-Cada `LogEntry` tem 8 bytes: timestamp (4 B), temperatura (1 B), umidade (1 B), LDR (1 B), status (1 B).
-
-> Quando o ring buffer enche, os logs mais antigos são sobrescritos automaticamente (FIFO).
-
----
-
-## 🐛 Debug e Troubleshooting
-
-- O **Serial Monitor** (9600 baud) imprime todos os passos de inicialização e os valores consolidados a cada janela de 10s.
-- Se o **LCD não acender**: rode o scan I2C que aparece no boot e ajuste `LCD_ADDR` se necessário (`0x27` ou `0x3F`).
-- Se o **RTC voltar com hora errada** após desligar: verifique a bateria CR2032 do módulo DS1302.
-- Se o **DHT11 retornar `NaN`** com frequência: confira o resistor de pull-up de 10 kΩ entre `VCC` e o pino de dados.
-- Para **forçar um reset da configuração** (ex.: após mudar a struct `Settings`): incremente o valor de `EEP_MAGIC` no código — no próximo boot, a config será recriada com os defaults.
-
----
-
-## 📚 Bibliotecas Utilizadas
-
-- **[LiquidCrystal_I2C](https://github.com/marcoschwartz/LiquidCrystal_I2C)** — Driver do LCD via PCF8574
-- **[DHT sensor library](https://github.com/adafruit/DHT-sensor-library)** — Driver do DHT11/DHT22 (Adafruit)
-- **[Rtc by Makuna](https://github.com/Makuna/Rtc)** — Driver do DS1302 (e outros RTCs)
-- `Wire.h`, `EEPROM.h`, `Arduino.h` — Bibliotecas core do framework Arduino
+| LCD não acende / só mostra blocos | Endereço I²C errado | Mude `LCD_ADDR` de `0x27` para `0x3F` |
+| LCD acende mas texto truncado | USB com pouca corrente | Use fonte externa 5 V/1 A |
+| Hora resetada toda vez que liga | Bateria CR2032 do RTC fraca | Troque a bateria |
+| Hora errada após upload | `__DATE__` reflete hora local | Confira o `cfg.utcOffset` (deve ser `-3` no Brasil) |
+| Menu rola sozinho | Drift do joystick | Aumente `JOY_DEADZONE` para 250 ou 300 |
+| Joystick Up/Down invertido | Orientação física do módulo | Inverta os sinais em `joyDir()` ou gire o módulo 180° |
+| DHT11 retorna NaN frequente | Pull-up faltando ou cabo longo demais | Adicione resistor 10 kΩ entre DATA e +5 V |
+| Buzzer "afina" no menu | Conflito de timer com PWM | É esperado — `tone()` e PWM compartilham Timer2 |
+| LED amarelo parece verde | Canal G do RGB muito brilhante | Ajuste o valor `80` em `setRGB(255, 80)` no `alertApply()` |
+| Logs sumiram após reflash | `EEP_MAGIC` foi bumpado | Comportamento intencional — força reset da config |
 
 ---
 
@@ -271,3 +381,6 @@ Projeto desenvolvido para a disciplina de **Edge Computing & Computer Systems** 
 |JOÃO VITOR RODRIGUES COSTA |     569510     |
 ---
 
+## 📄 Licença
+
+Uso acadêmico. Sinta-se à vontade para estudar, modificar e adaptar.
