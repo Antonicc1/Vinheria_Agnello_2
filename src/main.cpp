@@ -10,6 +10,11 @@
  *    4) Faz scan I2C e lista os enderecos encontrados
  *    5) Inicializa LCD e RTC; falhas viram avisos nao-fatais
  *
+ *  Navegacao:
+ *    - Joystick (eixo Y) -> rola menus e logs (Up/Down)
+ *    - Botao OK          -> confirma/entra
+ *    - Botao CANCEL      -> volta/sai
+ *
  * ===================================================================== */
 
 // ------------------------- BIBLIOTECAS --------------------------------
@@ -25,8 +30,8 @@
 // Mapeamento dos perifericos nos pinos digitais/analogicos do Arduino.
 // Mudou a fiacao? Atualize aqui em vez de procurar pelo codigo todo.
 #define PIN_DHT       2          // Sensor DHT11 - data pin (precisa de pull-up 10K)
-#define PIN_BTN_UP    3          // Botao "para cima" - navegacao no menu
-#define PIN_BTN_DN    4          // Botao "para baixo" - navegacao no menu
+                                 // Pinos 3 e 4 ficaram livres apos a troca dos botoes
+                                 // Up/Down pelo joystick - reuse-os a vontade.
 #define PIN_BTN_OK    5          // Botao OK - confirma/entra no menu
 #define PIN_BTN_CAN   6          // Botao CANCEL - sai/volta
 #define PIN_BUZZER    8          // Buzzer ativo/passivo (controlado por tone())
@@ -37,6 +42,18 @@
                                  //    dos pinos 3 e 11. Por isso o azul fica em D7
                                  //    como ON/OFF puro, sem fade.
 #define PIN_LDR       A0         // Sensor de luz LDR (pino analogico)
+
+// =================== JOYSTICK (KY-023 ou similar) ====================
+// So usamos o eixo Y para navegacao Up/Down. VRx e SW podem ser
+// conectados depois se quiser dar mais funcoes (ex: VRx para ajustar
+// valores no menu sem precisar de "wrap-around" no OK).
+//
+// Em repouso o joystick fica em ~512 (analogRead 0-1023). Deslocado:
+//   Y < 312  -> uma direcao (UP por convencao neste codigo)
+//   Y > 712  -> outra direcao (DOWN)
+// Se a direcao ficar invertida na sua montagem, basta inverter os
+// sinais em joyDir() abaixo - depende de como o modulo esta orientado.
+#define PIN_JOY_Y     A1
 
 // =================== DS1302 (3-wire serial, NAO e I2C) ===============
 // O DS1302 NAO usa I2C - ele tem seu proprio protocolo de 3 fios.
@@ -82,6 +99,13 @@ const uint8_t  TEMP_YELLOW_MAX = 30;   // 30 C = 86 F
 
 const uint16_t BUZZ_AMARELO  = 500;  // Frequencia em Hz para alerta amarelo
 const uint16_t BUZZ_VERMELHO = 1000; // Frequencia mais aguda = mais urgente
+
+// =================== JOYSTICK THRESHOLDS =============================
+// Deadzone generosa de proposito: joysticks baratos tem drift de centro
+// e ruido, e nao queremos que o menu role sozinho com o joystick parado.
+// Se sentir drift, suba a deadzone para 250 ou 300.
+const uint16_t JOY_CENTER     = 512;
+const uint16_t JOY_DEADZONE   = 200;   // [312..712] = neutro
 
 // =================== EEPROM LAYOUT ===================================
 // Mapa de memoria da EEPROM (1024 bytes no ATmega328P):
@@ -736,21 +760,37 @@ void renderLogs() {
 }
 
 // =====================================================================
-// BOTOES
+// BOTOES + JOYSTICK
 // =====================================================================
 
 // Como os botoes usam INPUT_PULLUP, "pressionado" significa nivel LOW.
 bool btnPressed(uint8_t pin) { return digitalRead(pin) == LOW; }
 
-// Le os 4 botoes e despacha a acao conforme o modo do app.
-// Implementa debounce simples por tempo (180ms entre eventos).
+// Le o eixo Y do joystick e retorna a direcao detectada:
+//   -1 = UP   (joystick para cima)
+//    0 = neutro (dentro da deadzone)
+//   +1 = DOWN (joystick para baixo)
+//
+// Se na sua montagem fisica o joystick estiver com Up/Down invertidos,
+// troque os sinais dos returns aqui (ou gire o modulo 180 graus).
+int8_t joyDir() {
+  uint16_t v = analogRead(PIN_JOY_Y);
+  if (v < JOY_CENTER - JOY_DEADZONE) return -1;
+  if (v > JOY_CENTER + JOY_DEADZONE) return +1;
+  return 0;
+}
+
+// Le os botoes + joystick e despacha a acao conforme o modo do app.
+// Implementa debounce simples por tempo (180ms entre eventos), que para o
+// joystick tambem funciona como auto-repeat: segurar o eixo rola o menu
+// continuamente, ~5 itens por segundo.
 //
 // Resumo do mapeamento por modo:
-//   NORMAL: CANCEL abre o menu;             OK nao tem efeito.
-//   MENU:   OK confirma item selecionado;   CANCEL volta pra leitura.
-//   LOGS:   UP/DOWN navegam entre logs;     CANCEL volta pro menu.
+//   NORMAL: CANCEL abre o menu;                OK nao tem efeito.
+//   MENU:   joystick rola itens; OK confirma;  CANCEL volta pra leitura.
+//   LOGS:   joystick rola logs;                CANCEL volta pro menu.
 void handleButtons() {
-  if (millis() - tLastBtn < 180) return;     // debounce
+  if (millis() - tLastBtn < 180) return;     // debounce / repeat-rate
 
   if (btnPressed(PIN_BTN_OK)) {
     tLastBtn = millis();
@@ -778,21 +818,26 @@ void handleButtons() {
       if (lcdOk) lcd.clear();
     }
   }
-  else if (btnPressed(PIN_BTN_UP)) {
-    tLastBtn = millis();
-    if (appMode == MODE_MENU) {
-      // Wrap-around: do primeiro item vai para o ultimo.
-      menuIdx = (menuIdx == 0) ? MENU_ITEMS - 1 : menuIdx - 1;
-    } else if (appMode == MODE_LOGS) {
-      if (logViewIdx > 0) logViewIdx--;
-    }
-  }
-  else if (btnPressed(PIN_BTN_DN)) {
-    tLastBtn = millis();
-    if (appMode == MODE_MENU) {
-      menuIdx = (menuIdx + 1) % MENU_ITEMS;     // wrap-around
-    } else if (appMode == MODE_LOGS) {
-      logViewIdx++;     // clamp e feito em renderLogs
+  else {
+    // Joystick (eixo Y) substitui os antigos botoes Up/Down.
+    int8_t dir = joyDir();
+    if (dir == -1) {                         // UP
+      tLastBtn = millis();
+      Serial.println(F("[JOY] UP"));
+      if (appMode == MODE_MENU) {
+        // Wrap-around: do primeiro item vai para o ultimo.
+        menuIdx = (menuIdx == 0) ? MENU_ITEMS - 1 : menuIdx - 1;
+      } else if (appMode == MODE_LOGS) {
+        if (logViewIdx > 0) logViewIdx--;
+      }
+    } else if (dir == +1) {                  // DOWN
+      tLastBtn = millis();
+      Serial.println(F("[JOY] DOWN"));
+      if (appMode == MODE_MENU) {
+        menuIdx = (menuIdx + 1) % MENU_ITEMS;     // wrap-around
+      } else if (appMode == MODE_LOGS) {
+        logViewIdx++;     // clamp e feito em renderLogs
+      }
     }
   }
 }
@@ -826,11 +871,11 @@ void maybeLog() {
 void setup() {
   // ---- Configura pinos ----
   // Botoes com pull-up interno: pino fica em HIGH ate ser puxado para GND
-  // pelo botao. Economiza 4 resistores externos.
-  pinMode(PIN_BTN_UP,  INPUT_PULLUP);
-  pinMode(PIN_BTN_DN,  INPUT_PULLUP);
+  // pelo botao. Economiza 2 resistores externos.
   pinMode(PIN_BTN_OK,  INPUT_PULLUP);
   pinMode(PIN_BTN_CAN, INPUT_PULLUP);
+  // Joystick: analogRead() ja configura o pino como entrada analogica
+  // internamente, entao nao precisa de pinMode aqui.
   pinMode(PIN_LED_R, OUTPUT);
   pinMode(PIN_LED_G, OUTPUT);
   pinMode(PIN_LED_B, OUTPUT);
@@ -865,6 +910,11 @@ void setup() {
   Serial.print(F("Carregando config da EEPROM... "));
   cfgLoad();
   Serial.println(F("OK"));
+
+  // ---- Joystick: leitura inicial (so para debug) ----
+  // Util para diagnosticar drift ou fiacao trocada logo no boot.
+  Serial.print(F("Joystick Y em repouso: "));
+  Serial.println(analogRead(PIN_JOY_Y));
 
   // ---- DHT11 ----
   Serial.print(F("Inicializando DHT11... "));
@@ -957,7 +1007,7 @@ void loop() {
   // Detecta transicao de modo para restaurar LED/buzzer ao sair do menu.
   static AppMode lastAppMode = MODE_BOOT;
 
-  // ---- Le botoes (com debounce interno) ----
+  // ---- Le botoes e joystick (com debounce interno) ----
   handleButtons();
 
   // ---- LED RGB e buzzer conforme modo do app ----
