@@ -114,7 +114,7 @@ const uint16_t JOY_DEADZONE   = 200;   // [312..712] = neutro
 //   [18..19]  -> head do ring buffer de logs (uint16)
 //   [20..31]  -> reserva/padding
 //   [32..1023]-> logs propriamente ditos (8 bytes cada, ring buffer)
-const uint8_t  EEP_MAGIC      = 0xAD;   // bump para forcar re-sync da hora do RTC
+const uint8_t  EEP_MAGIC      = 0xAE;   // bump para forcar re-sync da hora do RTC
                                         // Quando voce muda este valor, no proximo
                                         // boot a config sera resetada para default.
 const uint16_t EEP_ADDR_CFG   = 0;      // Onde mora a struct Settings
@@ -131,7 +131,7 @@ const uint16_t LOG_MAX        = (1024 - EEP_ADDR_LOGS) / LOG_ENTRY_SIZE;
 // vem logo depois). Mudou a struct? Confira o sizeof.
 struct Settings {
   uint8_t  magic;          // Identificador de versao (= EEP_MAGIC se valido)
-  int8_t   utcOffset;      // Fuso horario, ex: -3 para Brasil (BRT)
+  int8_t   utcOffset;      // Fuso horario: apenas -3 (Sao Paulo) ou -4 (Nova York)
   uint8_t  tempUnit;       // 0 = Celsius, 1 = Fahrenheit
   uint8_t  language;       // 0 = PT, 1 = EN, 2 = ES
   uint8_t  logIntervalS;   // Intervalo entre gravacoes de log (em segundos)
@@ -253,7 +253,7 @@ void cfgLoad() {
     // Em ambos os casos, recriamos a config do zero.
     freshConfig = true;
     cfg.magic        = EEP_MAGIC;
-    cfg.utcOffset    = -3;       // Brasil (BRT)
+    cfg.utcOffset    = -3;       // Sao Paulo (BRT)
     cfg.tempUnit     = 0;        // Celsius
     cfg.language     = 0;        // Portugues
     cfg.logIntervalS = 60;       // 1 log por minuto
@@ -265,6 +265,12 @@ void cfgLoad() {
     uint16_t z = 0;
     EEPROM.put(EEP_ADDR_LOGN, z);
     EEPROM.put(EEP_ADDR_HEAD, z);
+  }
+  // Sanidade: a config so suporta -3 (SP) e -4 (NY). Se a EEPROM tiver
+  // qualquer outro valor (lixo, versao antiga), normaliza para SP.
+  if (cfg.utcOffset != -3 && cfg.utcOffset != -4) {
+    cfg.utcOffset = -3;
+    cfgSave();
   }
   // Restaura calibracao do LDR (se existir, senao ficam nos defaults).
   if (cfg.ldrMin <= 1023) ldrRawMin = cfg.ldrMin;
@@ -440,6 +446,13 @@ const char* zoneText(uint8_t z) {
   }
 }
 
+// Retorna o nome curto da cidade conforme o utcOffset atual.
+// Apenas duas opcoes suportadas: -3 (Sao Paulo) e -4 (Nova York).
+// Nome com 9 chars cada para alinhar bem no layout do menu.
+const char* tzName(int8_t off) {
+  return (off == -4) ? "Nova York" : "Sao Paulo";
+}
+
 // Converte Celsius para a unidade selecionada (C ou F).
 // IMPORTANTE: isso e SO para exibicao. A avaliacao de zona em evalZone()
 // sempre usa Celsius (curT), entao os alertas disparam na mesma temperatura
@@ -599,11 +612,13 @@ void renderHome() {
 }
 
 // Retorna o label do item de menu no idioma atual.
+// Limite de 9 chars (cabe no layout %-9s%10s do renderMenu, deixando
+// 10 chars para o valor - suficiente para "Sao Paulo" e "Nova York").
 const char* menuLabel(uint8_t i) {
   if (cfg.language == 0) {           // PT
     switch (i) {
-      case 0: return "UTC offset";
-      case 1: return "Unidade temp";
+      case 0: return "Fuso";
+      case 1: return "Unid.temp";
       case 2: return "Idioma";
       case 3: return "Buzzer";
       case 4: return "Ver logs";
@@ -611,7 +626,7 @@ const char* menuLabel(uint8_t i) {
     }
   } else if (cfg.language == 1) {    // EN
     switch (i) {
-      case 0: return "UTC offset";
+      case 0: return "Timezone";
       case 1: return "Temp unit";
       case 2: return "Language";
       case 3: return "Buzzer";
@@ -620,8 +635,8 @@ const char* menuLabel(uint8_t i) {
     }
   } else {                            // ES
     switch (i) {
-      case 0: return "UTC offset";
-      case 1: return "Unidad temp";
+      case 0: return "Zona hor.";
+      case 1: return "Unid.temp";
       case 2: return "Idioma";
       case 3: return "Buzzer";
       case 4: return "Ver logs";
@@ -631,11 +646,12 @@ const char* menuLabel(uint8_t i) {
   return "";
 }
 
-// Escreve em 'out' o valor atual do item i (ex: "+3", "C", "PT", "ON").
-// Usa snprintf para garantir que nao estoure o buffer.
+// Escreve em 'out' o valor atual do item i (ex: "Sao Paulo", "C", "PT", "ON").
+// Usa snprintf para garantir que nao estoure o buffer. Largura util = 10
+// chars (formato %10s no renderMenu).
 void menuValueAt(uint8_t i, char* out, uint8_t len) {
   switch (i) {
-    case 0: snprintf(out, len, "%+d", cfg.utcOffset); break;
+    case 0: snprintf(out, len, "%s", tzName(cfg.utcOffset)); break;
     case 1: snprintf(out, len, "%c", cfg.tempUnit == 0 ? 'C' : 'F'); break;
     case 2: {
       const char* langs[] = {"PT", "EN", "ES"};
@@ -666,11 +682,12 @@ void renderMenu() {
       lcd.print(F("                    ")); continue;     // linha vazia
     }
     lcd.print(idx == menuIdx ? '>' : ' ');
-    char val[6];
+    char val[11];     // largura util 10 chars + null terminator
     menuValueAt(idx, val, sizeof(val));
     char line[21];
-    // %-13s = label esquerda alinhado em 13 chars; %5s = valor direita em 5
-    snprintf(line, sizeof(line), "%-13s%5s", menuLabel(idx), val);
+    // %-9s = label esquerda alinhado em 9 chars; %10s = valor direita em 10
+    // Total: 1 ('>' marker) + 9 + 10 = 20 chars (exato da linha do LCD).
+    snprintf(line, sizeof(line), "%-9s%10s", menuLabel(idx), val);
     lcd.print(line);
   }
 }
@@ -681,9 +698,8 @@ void menuAction(int8_t delta) {
   // delta == 0 = botao OK; UP/DOWN ja sao tratados como navegacao em handleButtons
   if (delta != 0) return;
   switch (menuIdx) {
-    case 0:  // UTC offset: incrementa de 1 em 1, wrap de +14 para -12
-      cfg.utcOffset++;
-      if (cfg.utcOffset > 14) cfg.utcOffset = -12;
+    case 0:  // Fuso: alterna entre Sao Paulo (-3) e Nova York (-4)
+      cfg.utcOffset = (cfg.utcOffset == -3) ? -4 : -3;
       break;
     case 1:  // Unidade temp: toggle C <-> F
       cfg.tempUnit = !cfg.tempUnit;
