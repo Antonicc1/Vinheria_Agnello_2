@@ -160,14 +160,14 @@ bool freshConfig = false;    // setado pelo cfgLoad quando magic byte mudou
                              // -> indica que a config foi resetada para default,
                              //    entao tambem precisamos resetar a hora do RTC.
 
-// Acumuladores para a media movel de 10 segundos.
-// A cada 1s amostramos os sensores; a cada 10s consolidamos a media.
-const uint8_t WINDOW_S = 10;
+// Acumuladores para a media movel de 5 segundos.
+// A cada 1s amostramos os sensores; a cada 5s consolidamos a media.
+const uint8_t WINDOW_S = 5;
 float    sumT = 0, sumH = 0;     // Soma das temperaturas/umidades na janela
-uint32_t sumL = 0;               // Soma do LDR (uint32 evita overflow com 10 amostras)
+uint32_t sumL = 0;               // Soma do LDR (uint32 evita overflow com 5 amostras)
 uint8_t  nSamples = 0;           // Quantas amostras validas tem na janela
 
-// Valores "atuais" exibidos na tela (resultado da ultima janela de 10s).
+// Valores "atuais" exibidos na tela (resultado da ultima janela de 5s).
 float   curT = 0, curH = 0;
 uint8_t curL = 0;
 uint8_t curStatus = 0;           // Pior zona entre os 3 sensores (worst-case)
@@ -369,11 +369,11 @@ uint8_t evalZone(float v, float gMin, float gMax, float yMax) {
   return 2;                                // alem do toleravel
 }
 
-// Fecha a janela de 10s: calcula medias, classifica em zonas e
+// Fecha a janela de 5s: calcula medias, classifica em zonas e
 // determina o status global como o pior caso (worst-of-3).
 void windowFinalize() {
   if (nSamples == 0) {
-    Serial.println(F("[WARN] Janela 10s sem amostras validas"));
+    Serial.println(F("[WARN] Janela 5s sem amostras validas"));
     return;
   }
   curT = sumT / nSamples;
@@ -386,7 +386,7 @@ void windowFinalize() {
   curStatus = max(max(zT, zH), zL);     // pior zona = status global
 
   // Telemetria via Serial - util para debug e gravacao em Tinkercad/PC.
-  Serial.print(F("[10s] T=")); Serial.print(curT, 1);
+  Serial.print(F("[5s] T=")); Serial.print(curT, 1);
   Serial.print(F("C  U=")); Serial.print(curH, 1);
   Serial.print(F("%  L=")); Serial.print(curL);
   Serial.print(F("/255  zT=")); Serial.print(zT);
@@ -1117,7 +1117,7 @@ void loop() {
     sensorSample();
   }
 
-  // ---- Janela de 10s: consolida medias e atualiza alerta ----
+  // ---- Janela de 5s: consolida medias e atualiza alerta ----
   if (now - tLastWindow >= (unsigned long)WINDOW_S * 1000UL) {
     tLastWindow = now;
     windowFinalize();
