@@ -114,7 +114,7 @@ const uint16_t JOY_DEADZONE   = 200;   // [312..712] = neutro
 //   [18..19]  -> head do ring buffer de logs (uint16)
 //   [20..31]  -> reserva/padding
 //   [32..1023]-> logs propriamente ditos (8 bytes cada, ring buffer)
-const uint8_t  EEP_MAGIC      = 0xAD;   // bump para forcar re-sync da hora do RTC
+const uint8_t  EEP_MAGIC      = 0xAE;   // bump para forcar re-sync da hora do RTC
                                         // Quando voce muda este valor, no proximo
                                         // boot a config sera resetada para default.
 const uint16_t EEP_ADDR_CFG   = 0;      // Onde mora a struct Settings
@@ -198,7 +198,7 @@ unsigned long bootMillis  = 0;   // fallback de timestamp se RTC falhar
 
 // Estado dos menus.
 uint8_t menuIdx = 0;             // Item atualmente destacado
-const uint8_t MENU_ITEMS = 7;    // Total de itens (0..5)
+const uint8_t MENU_ITEMS = 6;    // Total de itens (0..5)
 uint16_t logViewIdx = 0;         // Qual log esta sendo visualizado
 
 // =================== CARACTERES CUSTOMIZADOS =========================
@@ -248,6 +248,7 @@ void cfgSave() {
 // diferente), inicializa com defaults e marca freshConfig = true.
 void cfgLoad() {
   EEPROM.get(EEP_ADDR_CFG, cfg);
+  cfg.utcOffset = -3;
   if (cfg.magic != EEP_MAGIC) {
     // Primeira boot OU EEP_MAGIC foi bumpado no codigo.
     // Em ambos os casos, recriamos a config do zero.
@@ -602,33 +603,30 @@ void renderHome() {
 const char* menuLabel(uint8_t i) {
   if (cfg.language == 0) {           // PT
     switch (i) {
-      case 0: return "UTC offset";
-      case 1: return "Unidade temp";
-      case 2: return "Idioma";
-      case 3: return "Buzzer";
-      case 4: return "Ver logs";
-      case 5: return "Limpar logs";
-      case 6: return "Sair";
+      case 0: return "Unidade temp";
+      case 1: return "Idioma";
+      case 2: return "Buzzer";
+      case 3: return "Ver logs";
+      case 4: return "Limpar logs";
+      case 5: return "Sair";
     }
   } else if (cfg.language == 1) {    // EN
     switch (i) {
-      case 0: return "UTC offset";
-      case 1: return "Temp unit";
-      case 2: return "Language";
-      case 3: return "Buzzer";
+      case 0: return "Temp unit";
+      case 1: return "Language";
+      case 2: return "Buzzer";
+      case 3: return "View logs";
       case 4: return "View logs";
-      case 5: return "View logs";
-      case 6: return "Exit";
+      case 5: return "Exit";
     }
   } else {                            // ES
     switch (i) {
-      case 0: return "UTC offset";
-      case 1: return "Unidad temp";
-      case 2: return "Idioma";
-      case 3: return "Buzzer";
-      case 4: return "Ver logs";
-      case 5: return "Borrar logs";
-      case 6: return "Salir";
+      case 0: return "Unidad temp";
+      case 1: return "Idioma";
+      case 2: return "Buzzer";
+      case 3: return "Ver logs";
+      case 4: return "Borrar logs";
+      case 5: return "Salir";
     }
   }
   return "";
@@ -638,17 +636,16 @@ const char* menuLabel(uint8_t i) {
 // Usa snprintf para garantir que nao estoure o buffer.
 void menuValueAt(uint8_t i, char* out, uint8_t len) {
   switch (i) {
-    case 0: snprintf(out, len, "%+d", cfg.utcOffset); break;
-    case 1: snprintf(out, len, "%c", cfg.tempUnit == 0 ? 'C' : 'F'); break;
-    case 2: {
+    case 0: snprintf(out, len, "%c", cfg.tempUnit == 0 ? 'C' : 'F'); break;
+    case 1: {
       const char* langs[] = {"PT", "EN", "ES"};
       snprintf(out, len, "%s", langs[cfg.language]);
       break;
     }
-    case 3: snprintf(out, len, "%s", cfg.buzzerOn ? "ON" : "OFF"); break;
-    case 4: snprintf(out, len, ">"); break;     // entra em submenu
-    case 5: snprintf(out, len, ">"); break;     // limpar logs
-    case 6: snprintf(out, len, ">"); break;     // sair
+    case 2: snprintf(out, len, "%s", cfg.buzzerOn ? "ON" : "OFF"); break;
+    case 3: snprintf(out, len, ">"); break;     // entra em submenu
+    case 4: snprintf(out, len, ">"); break;     // limpar logs
+    case 5: snprintf(out, len, ">"); break;     // sair
   }
 }
 
@@ -685,23 +682,19 @@ void menuAction(int8_t delta) {
   // delta == 0 = botao OK; UP/DOWN ja sao tratados como navegacao em handleButtons
   if (delta != 0) return;
   switch (menuIdx) {
-    case 0:  // UTC offset: incrementa de 1 em 1, wrap de +14 para -12
-      cfg.utcOffset++;
-      if (cfg.utcOffset > 14) cfg.utcOffset = -12;
-      break;
-    case 1:  // Unidade temp: toggle C <-> F
+    case 0:  // Unidade temp: toggle C <-> F
       cfg.tempUnit = !cfg.tempUnit;
       break;
-    case 2:  // Idioma: cicla PT -> EN -> ES -> PT
+    case 1:  // Idioma: cicla PT -> EN -> ES -> PT
       cfg.language = (cfg.language + 1) % 3;
       break;
-    case 3:  // Buzzer: toggle ON <-> OFF
+    case 2:  // Buzzer: toggle ON <-> OFF
       cfg.buzzerOn = !cfg.buzzerOn;
       break;
-    case 4:  // Ver logs
+    case 3:  // Ver logs
       appMode = MODE_LOGS;
       break;
-    case 5:
+    case 4:
       logClearAll();
       logViewIdx = 0;
       if (lcdOk) {
@@ -715,7 +708,7 @@ void menuAction(int8_t delta) {
       }
       Serial.println(F("[EEPROM] Todos os logs apagados"));
       break;  
-    case 6:  // Sair
+    case 5:  // Sair
       cfgSave();
       appMode = MODE_NORMAL;
       if (lcdOk) lcd.clear();
