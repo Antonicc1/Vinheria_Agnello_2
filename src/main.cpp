@@ -171,8 +171,8 @@ bool freshConfig = false;    // setado pelo cfgLoad quando magic byte mudou
                              //    entao tambem precisamos resetar a hora do RTC.
 
 // Acumuladores para a media movel de 10 segundos.
-// A cada 1s amostramos os sensores; a cada 10s consolidamos a media.
-const uint8_t WINDOW_S = 10;
+// A cada 1s amostramos os sensores; a cada 5s consolidamos a media.
+const uint8_t WINDOW_S = 5;
 float    sumT = 0, sumH = 0;     // Soma das temperaturas/umidades na janela
 uint32_t sumL = 0;               // Soma do LDR (uint32 evita overflow com 10 amostras)
 uint8_t  nSamples = 0;           // Quantas amostras validas tem na janela
