@@ -198,7 +198,7 @@ unsigned long bootMillis  = 0;   // fallback de timestamp se RTC falhar
 
 // Estado dos menus.
 uint8_t menuIdx = 0;             // Item atualmente destacado
-const uint8_t MENU_ITEMS = 6;    // Total de itens (0..5)
+const uint8_t MENU_ITEMS = 7;    // Total de itens (0..5)
 uint16_t logViewIdx = 0;         // Qual log esta sendo visualizado
 
 // =================== CARACTERES CUSTOMIZADOS =========================
@@ -607,7 +607,8 @@ const char* menuLabel(uint8_t i) {
       case 2: return "Idioma";
       case 3: return "Buzzer";
       case 4: return "Ver logs";
-      case 5: return "Sair";
+      case 5: return "Limpar logs";
+      case 6: return "Sair";
     }
   } else if (cfg.language == 1) {    // EN
     switch (i) {
@@ -616,7 +617,8 @@ const char* menuLabel(uint8_t i) {
       case 2: return "Language";
       case 3: return "Buzzer";
       case 4: return "View logs";
-      case 5: return "Exit";
+      case 5: return "View logs";
+      case 6: return "Exit";
     }
   } else {                            // ES
     switch (i) {
@@ -625,7 +627,8 @@ const char* menuLabel(uint8_t i) {
       case 2: return "Idioma";
       case 3: return "Buzzer";
       case 4: return "Ver logs";
-      case 5: return "Salir";
+      case 5: return "Borrar logs";
+      case 6: return "Salir";
     }
   }
   return "";
@@ -644,7 +647,8 @@ void menuValueAt(uint8_t i, char* out, uint8_t len) {
     }
     case 3: snprintf(out, len, "%s", cfg.buzzerOn ? "ON" : "OFF"); break;
     case 4: snprintf(out, len, ">"); break;     // entra em submenu
-    case 5: snprintf(out, len, ">"); break;     // sair
+    case 5: snprintf(out, len, ">"); break;     // limpar logs
+    case 6: snprintf(out, len, ">"); break;     // sair
   }
 }
 
@@ -697,7 +701,21 @@ void menuAction(int8_t delta) {
     case 4:  // Ver logs
       appMode = MODE_LOGS;
       break;
-    case 5:  // Sair
+    case 5:
+      logClearAll();
+      logViewIdx = 0;
+      if (lcdOk) {
+        lcd.clear();
+        lcd.setCursor(0, 1);
+        if (cfg.language == 0)      lcd.print(F("   Logs apagados!   "));
+        else if (cfg.language == 1) lcd.print(F("   Logs cleared!    "));
+        else                        lcd.print(F(" Logs eliminados!   "));
+        delay(1500);
+        lcd.clear();
+      }
+      Serial.println(F("[EEPROM] Todos os logs apagados"));
+      break;  
+    case 6:  // Sair
       cfgSave();
       appMode = MODE_NORMAL;
       if (lcdOk) lcd.clear();
