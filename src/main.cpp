@@ -114,7 +114,7 @@ const uint16_t JOY_DEADZONE   = 200;   // [312..712] = neutro
 //   [18..19]  -> head do ring buffer de logs (uint16)
 //   [20..31]  -> reserva/padding
 //   [32..1023]-> logs propriamente ditos (8 bytes cada, ring buffer)
-const uint8_t  EEP_MAGIC      = 0xB0;   // bump para forcar re-sync da hora do RTC
+const uint8_t  EEP_MAGIC      = 0xB1;   // bump para forcar re-sync da hora do RTC
                                         // Quando voce muda este valor, no proximo
                                         // boot a config sera resetada para default.
 const uint16_t EEP_ADDR_CFG   = 0;      // Onde mora a struct Settings
@@ -937,42 +937,29 @@ void setup() {
   // descarregada, write-protect e sincronizacao com a hora de compilacao.
   Serial.print(F("Inicializando RTC DS1302... "));
   rtc.Begin();
-
+  
   // __DATE__/__TIME__ vem na hora local do PC (BRT no caso). O RTC deve
   // armazenar UTC para que o offset do menu funcione corretamente.
   // Convertemos local -> UTC subtraindo o offset configurado.
   RtcDateTime compileLocal = RtcDateTime(__DATE__, __TIME__);
   RtcDateTime compileTime(compileLocal.TotalSeconds() - (int32_t)cfg.utcOffset * 3600L);
 
+  // Antes de qualquer escrita — sempre, sem condição
+  rtc.SetIsWriteProtected(false);
+  rtc.SetIsRunning(true);
+
   if (!rtc.IsDateTimeValid()) {
-    // RTC perdeu a hora (sem bateria ou bateria fraca)
     Serial.println(F("hora invalida, ajustando pelo build"));
     rtc.SetDateTime(compileTime);
   } else if (freshConfig) {
-    // Config foi renovada (magic byte mudou) - forca re-sync da hora
     Serial.println(F("config renovada, ressincronizando hora pelo build"));
     rtc.SetDateTime(compileTime);
-    rtc.SetIsWriteProtected(false);
-  }
-
-  // Por padrao, o DS1302 vem com write-protect ativo. Precisa desligar
-  // para conseguir gravar a hora (e isso ja foi feito acima, mas garantia
-  // dupla nao machuca).
-  if (rtc.GetIsWriteProtected()) {
-    Serial.println(F("  removendo write protect..."));
-  }
-
-  // O CH (Clock Halt) bit pode estar setado se for primeira energizacao;
-  // precisa limpar para o oscilador comecar a contar.
-  if (!rtc.GetIsRunning()) {
-    Serial.println(F("  RTC parado, iniciando..."));
-    rtc.SetIsRunning(true);
   }
 
   // Sanidade extra: se a hora atual e anterior a compilacao, algo esta
   // errado. Reajusta para o build time como fallback.
   RtcDateTime now = rtc.GetDateTime();
-  if (now < compileTime) {
+  if (now < compileTime || now.Year() > 2030) {
     Serial.println(F("  hora antiga, ajustando pelo build"));
     rtc.SetDateTime(compileTime);
   }
