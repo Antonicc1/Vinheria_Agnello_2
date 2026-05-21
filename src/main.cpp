@@ -17,10 +17,11 @@
 #define PIN_LDR       A0
 
 #define PIN_JOY_Y     A1
-
 #define PIN_RTC_CLK   11
 #define PIN_RTC_DAT   12
 #define PIN_RTC_RST   13
+
+
 
 #define LCD_ADDR 0x27
 
@@ -42,7 +43,7 @@ const uint16_t BUZZ_VERMELHO = 1000;
 const uint16_t JOY_CENTER     = 512;
 const uint16_t JOY_DEADZONE   = 200;
 
-const uint8_t  EEP_MAGIC      = 0xB2;
+const uint8_t  EEP_MAGIC      = 0xB3;
 const uint16_t EEP_ADDR_CFG   = 0;
 const uint16_t EEP_ADDR_LOGN  = 16;
 const uint16_t EEP_ADDR_HEAD  = 18;
