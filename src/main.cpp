@@ -114,7 +114,7 @@ const uint16_t JOY_DEADZONE   = 200;   // [312..712] = neutro
 //   [18..19]  -> head do ring buffer de logs (uint16)
 //   [20..31]  -> reserva/padding
 //   [32..1023]-> logs propriamente ditos (8 bytes cada, ring buffer)
-const uint8_t  EEP_MAGIC      = 0xAE;   // bump para forcar re-sync da hora do RTC
+const uint8_t  EEP_MAGIC      = 0xB0;   // bump para forcar re-sync da hora do RTC
                                         // Quando voce muda este valor, no proximo
                                         // boot a config sera resetada para default.
 const uint16_t EEP_ADDR_CFG   = 0;      // Onde mora a struct Settings
@@ -161,12 +161,12 @@ Settings          cfg;                                  // Configuracao em RAM
 
 // =================== ESTADO ==========================================
 // Maquina de estados do app. So pode estar em um modo por vez.
-enum AppMode { MODE_BOOT, MODE_NORMAL, MODE_MENU, MODE_LOGS };
+enum AppMode { MODE_BOOT, MODE_NORMAL, MODE_MENU, MODE_LOGS};
 AppMode appMode = MODE_BOOT;
 
 bool lcdOk = false;          // LCD inicializou com sucesso?
 bool rtcOk = false;          // RTC esta funcionando?
-bool freshConfig = false;    // setado pelo cfgLoad quando magic byte mudou
+bool freshConfig = true;    // setado pelo cfgLoad quando magic byte mudou
                              // -> indica que a config foi resetada para default,
                              //    entao tambem precisamos resetar a hora do RTC.
 
@@ -643,7 +643,7 @@ void menuValueAt(uint8_t i, char* out, uint8_t len) {
       break;
     }
     case 2: snprintf(out, len, "%s", cfg.buzzerOn ? "ON" : "OFF"); break;
-    case 3: snprintf(out, len, ">"); break;     // entra em submenu
+    case 3: snprintf(out, len, ">"); break;     // ver logs
     case 4: snprintf(out, len, ">"); break;     // limpar logs
     case 5: snprintf(out, len, ">"); break;     // sair
   }
@@ -952,6 +952,7 @@ void setup() {
     // Config foi renovada (magic byte mudou) - forca re-sync da hora
     Serial.println(F("config renovada, ressincronizando hora pelo build"));
     rtc.SetDateTime(compileTime);
+    rtc.SetIsWriteProtected(false);
   }
 
   // Por padrao, o DS1302 vem com write-protect ativo. Precisa desligar
@@ -959,7 +960,6 @@ void setup() {
   // dupla nao machuca).
   if (rtc.GetIsWriteProtected()) {
     Serial.println(F("  removendo write protect..."));
-    rtc.SetIsWriteProtected(false);
   }
 
   // O CH (Clock Halt) bit pode estar setado se for primeira energizacao;
