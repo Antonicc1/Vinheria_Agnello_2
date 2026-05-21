@@ -949,11 +949,7 @@ void setup() {
   rtc.SetIsRunning(true);
 
   if (!rtc.IsDateTimeValid()) {
-    Serial.println(F("hora invalida, ajustando pelo build"));
-    rtc.SetDateTime(compileTime);
-  } else if (freshConfig) {
-    Serial.println(F("config renovada, ressincronizando hora pelo build"));
-    rtc.SetDateTime(compileTime);
+   rtc.SetDateTime(compileTime);
   }
 
   // Sanidade extra: se a hora atual e anterior a compilacao, algo esta
