@@ -1,3 +1,22 @@
+/* =====================================================================
+ *  VINHERIA AGNELLO - Sistema de Monitoramento Avancado
+ *  ---------------------------------------------------------------------
+ *  Placa: Arduino UNO R3 ou Nano (ambos ATmega328P - codigo identico)
+ *
+ *  Ao ligar, o programa:
+ *    1) Imprime no Serial @9600 baud todos os passos
+ *    2) Pisca o LED em vermelho, verde e amarelo (1s cada)
+ *    3) Bipa o buzzer 2x (500Hz e 1000Hz)
+ *    4) Faz scan I2C e lista os enderecos encontrados
+ *    5) Inicializa LCD e RTC; falhas viram avisos nao-fatais
+ *
+ *  Navegacao:
+ *    - Joystick (eixo Y) -> rola menus e logs (Up/Down)
+ *    - Botao OK          -> confirma/entra
+ *    - Botao CANCEL      -> volta/sai
+ *
+ * ===================================================================== */
+
 // ------------------------- BIBLIOTECAS --------------------------------
 #include <Arduino.h>             // API basica do Arduino (pinMode, digitalWrite, etc.)
 #include <Wire.h>                // Comunicacao I2C (usada pelo LCD)
@@ -95,19 +114,12 @@ const uint16_t JOY_DEADZONE   = 200;   // [312..712] = neutro
 //   [18..19]  -> head do ring buffer de logs (uint16)
 //   [20..31]  -> reserva/padding
 //   [32..1023]-> logs propriamente ditos (8 bytes cada, ring buffer)
-const uint8_t  EEP_MAGIC      = 0xAF;   // bump para forcar re-sync da hora do RTC
+const uint8_t  EEP_MAGIC      = 0xAD;   // bump para forcar re-sync da hora do RTC
                                         // Quando voce muda este valor, no proximo
                                         // boot a config sera resetada para default.
 const uint16_t EEP_ADDR_CFG   = 0;      // Onde mora a struct Settings
 const uint16_t EEP_ADDR_LOGN  = 16;     // Quantos logs validos existem
 const uint16_t EEP_ADDR_HEAD  = 18;     // Posicao do proximo slot para gravar
-const uint16_t EEP_ADDR_LOGV  = 20;     // Versao do schema/conteudo dos logs
-                                        // Bump LOGS_VERSION para limpar os logs
-                                        // SEM resetar a config (idioma, etc.).
-const uint8_t  LOGS_VERSION   = 0x01;   // Incremente este valor para forcar
-                                        // limpeza completa do historico no
-                                        // proximo boot. A logica esta em
-                                        // cfgLoad().
 const uint16_t EEP_ADDR_LOGS  = 32;     // Inicio dos dados dos logs
 const uint8_t  LOG_ENTRY_SIZE = 8;      // Tamanho de cada LogEntry em bytes
 const uint16_t LOG_MAX        = (1024 - EEP_ADDR_LOGS) / LOG_ENTRY_SIZE;
@@ -119,9 +131,7 @@ const uint16_t LOG_MAX        = (1024 - EEP_ADDR_LOGS) / LOG_ENTRY_SIZE;
 // vem logo depois). Mudou a struct? Confira o sizeof.
 struct Settings {
   uint8_t  magic;          // Identificador de versao (= EEP_MAGIC se valido)
-  int8_t   utcOffset;      // Fuso horario - fixo em -3 (Sao Paulo / BRT).
-                           // Mantido na struct para nao quebrar layout da EEPROM;
-                           // qualquer valor diferente de -3 e normalizado em cfgLoad().
+  int8_t   utcOffset;      // Fuso horario, ex: -3 para Brasil (BRT)
   uint8_t  tempUnit;       // 0 = Celsius, 1 = Fahrenheit
   uint8_t  language;       // 0 = PT, 1 = EN, 2 = ES
   uint8_t  logIntervalS;   // Intervalo entre gravacoes de log (em segundos)
@@ -160,14 +170,14 @@ bool freshConfig = false;    // setado pelo cfgLoad quando magic byte mudou
                              // -> indica que a config foi resetada para default,
                              //    entao tambem precisamos resetar a hora do RTC.
 
-// Acumuladores para a media movel de 5 segundos.
-// A cada 1s amostramos os sensores; a cada 5s consolidamos a media.
-const uint8_t WINDOW_S = 5;
+// Acumuladores para a media movel de 10 segundos.
+// A cada 1s amostramos os sensores; a cada 10s consolidamos a media.
+const uint8_t WINDOW_S = 10;
 float    sumT = 0, sumH = 0;     // Soma das temperaturas/umidades na janela
-uint32_t sumL = 0;               // Soma do LDR (uint32 evita overflow com 5 amostras)
+uint32_t sumL = 0;               // Soma do LDR (uint32 evita overflow com 10 amostras)
 uint8_t  nSamples = 0;           // Quantas amostras validas tem na janela
 
-// Valores "atuais" exibidos na tela (resultado da ultima janela de 5s).
+// Valores "atuais" exibidos na tela (resultado da ultima janela de 10s).
 float   curT = 0, curH = 0;
 uint8_t curL = 0;
 uint8_t curStatus = 0;           // Pior zona entre os 3 sensores (worst-case)
@@ -186,24 +196,9 @@ unsigned long tLastBtn    = 0;   // Ultimo botao pressionado (debounce)
 unsigned long tLastFrame  = 0;   // Ultimo redraw da tela
 unsigned long bootMillis  = 0;   // fallback de timestamp se RTC falhar
 
-// ANCORA DE TEMPO (estrategia anti-jitter do RTC).
-// O DS1302 lido em alta frequencia (300ms) ocasionalmente devolve valores
-// corrompidos que passam pela validacao basica (ex: bit-flip que troca
-// minuto 30 por 22). Em vez de filtrar cada leitura, ancoramos UMA UNICA
-// VEZ no boot e dai em diante avancamos o relogio usando millis() do AVR.
-// O RTC fica apenas como armazenamento persistente do tempo (papel para
-// o qual ele e confiavel, ao contrario de ler continuamente).
-// Trade-off: ficamos sujeitos a deriva do oscilador ceramico do AVR
-// (~30s/dia), aceitavel para um monitor de vinheria que pode ser
-// reenergizado periodicamente. Em troca, a tela fica 100% estavel.
-RtcDateTime    anchorRtcUtc((uint32_t)0);  // hora capturada no boot
-unsigned long  anchorMillis  = 0;          // millis() naquele instante
-bool           anchorSet     = false;      // true se a captura foi bem sucedida
-
 // Estado dos menus.
 uint8_t menuIdx = 0;             // Item atualmente destacado
-const uint8_t MENU_ITEMS = 6;    // Itens 0..5: Unid.temp, Idioma, Buzzer,
-                                 // Ver logs, Limpar logs, Sair.
+const uint8_t MENU_ITEMS = 6;    // Total de itens (0..5)
 uint16_t logViewIdx = 0;         // Qual log esta sendo visualizado
 
 // =================== CARACTERES CUSTOMIZADOS =========================
@@ -258,7 +253,7 @@ void cfgLoad() {
     // Em ambos os casos, recriamos a config do zero.
     freshConfig = true;
     cfg.magic        = EEP_MAGIC;
-    cfg.utcOffset    = -3;       // Sao Paulo (BRT)
+    cfg.utcOffset    = -3;       // Brasil (BRT)
     cfg.tempUnit     = 0;        // Celsius
     cfg.language     = 0;        // Portugues
     cfg.logIntervalS = 60;       // 1 log por minuto
@@ -271,26 +266,9 @@ void cfgLoad() {
     EEPROM.put(EEP_ADDR_LOGN, z);
     EEPROM.put(EEP_ADDR_HEAD, z);
   }
-  // Sanidade: o fuso e fixo em -3 (Sao Paulo). Se a EEPROM tiver qualquer
-  // outro valor (lixo, versao antiga, corrupcao), normaliza para -3.
-  if (cfg.utcOffset != -3) {
-    cfg.utcOffset = -3;
-    cfgSave();
-  }
   // Restaura calibracao do LDR (se existir, senao ficam nos defaults).
   if (cfg.ldrMin <= 1023) ldrRawMin = cfg.ldrMin;
   if (cfg.ldrMax <= 1023) ldrRawMax = cfg.ldrMax;
-
-  // Versionamento independente dos logs: se LOGS_VERSION mudou (ou e a
-  // primeira vez que rodamos esta logica, em que o byte ainda vale 0xFF),
-  // limpamos o ring buffer SEM tocar na config. Permite "limpar logs" via
-  // bump de constante sem o usuario perder idioma/unidade/buzzer.
-  uint8_t logVer;
-  EEPROM.get(EEP_ADDR_LOGV, logVer);
-  if (logVer != LOGS_VERSION) {
-    logClearAll();
-    EEPROM.put(EEP_ADDR_LOGV, LOGS_VERSION);
-  }
 }
 
 // Grava um log no ring buffer circular.
@@ -369,11 +347,11 @@ uint8_t evalZone(float v, float gMin, float gMax, float yMax) {
   return 2;                                // alem do toleravel
 }
 
-// Fecha a janela de 5s: calcula medias, classifica em zonas e
+// Fecha a janela de 10s: calcula medias, classifica em zonas e
 // determina o status global como o pior caso (worst-of-3).
 void windowFinalize() {
   if (nSamples == 0) {
-    Serial.println(F("[WARN] Janela 5s sem amostras validas"));
+    Serial.println(F("[WARN] Janela 10s sem amostras validas"));
     return;
   }
   curT = sumT / nSamples;
@@ -386,7 +364,7 @@ void windowFinalize() {
   curStatus = max(max(zT, zH), zL);     // pior zona = status global
 
   // Telemetria via Serial - util para debug e gravacao em Tinkercad/PC.
-  Serial.print(F("[5s] T=")); Serial.print(curT, 1);
+  Serial.print(F("[10s] T=")); Serial.print(curT, 1);
   Serial.print(F("C  U=")); Serial.print(curH, 1);
   Serial.print(F("%  L=")); Serial.print(curL);
   Serial.print(F("/255  zT=")); Serial.print(zT);
@@ -471,85 +449,17 @@ float tempForDisplay(float c) {
 }
 char tempUnitChar() { return cfg.tempUnit == 1 ? 'F' : 'C'; }
 
-// Verifica se uma leitura do RTC tem valores fisicamente possiveis.
-// Ano >= 2024 protege contra leituras corrompidas que retornam 2000 ou 2155.
-// Outros campos checam os ranges aceitos pelo proprio HD44780/calendario.
-bool rtcDateTimeSane(const RtcDateTime& t) {
-  if (t.Year()  < 2024 || t.Year()  > 2099) return false;
-  if (t.Month() < 1    || t.Month() > 12  ) return false;
-  if (t.Day()   < 1    || t.Day()   > 31  ) return false;
-  if (t.Hour()  > 23) return false;
-  if (t.Minute() > 59) return false;
-  if (t.Second() > 59) return false;
-  return true;
-}
-
-// Tenta capturar uma ancora confiavel a partir do RTC. Faz ate 20 tentativas
-// (~1s total) e exige DUAS leituras consecutivas que sejam:
-//   a) ambas sanas (passam rtcDateTimeSane)
-//   b) consistentes entre si (a 2a esta no maximo 2s a frente da 1a)
-// Isso filtra leituras isoladas corrompidas - se uma leitura ruim passar
-// por acaso pela sanidade, dificilmente outra leitura ruim consecutiva
-// vai aparecer batendo com ela. Mesmo com 50% das leituras ruins, a
-// probabilidade de falhar em 19 pares de tentativas e <1%.
-// Retorna true se conseguiu ancorar.
-bool tryAnchor() {
-  if (!rtcOk) return false;
-  RtcDateTime prev((uint32_t)0);
-  bool hasPrev = false;
-  for (uint8_t attempt = 0; attempt < 20; attempt++) {
-    RtcDateTime t = rtc.GetDateTime();
-    if (rtcDateTimeSane(t)) {
-      if (hasPrev) {
-        uint32_t s_prev = prev.TotalSeconds();
-        uint32_t s_t    = t.TotalSeconds();
-        if (s_t >= s_prev && (s_t - s_prev) <= 2UL) {
-          // Duas leituras seguidas concordam -> confiavel
-          anchorRtcUtc = t;
-          anchorMillis = millis();
-          anchorSet    = true;
-          return true;
-        }
-      }
-      prev = t;
-      hasPrev = true;
-    }
-    delay(50);
-  }
-  return false;
-}
-
-// Retorna o "Unix" do RTC (na verdade epoch 2000, padrao da lib RtcByMakuna).
-//
-// Estrategia anti-jitter: lemos o RTC UMA UNICA VEZ no boot (via tryAnchor)
-// e dai em diante derivamos o tempo atual a partir de millis(). Isso isola
-// completamente a tela de qualquer ruido do barramento 3-wire do DS1302.
-// O RTC nao e lido durante operacao normal - so no boot e em caso de
-// wraparound de millis() (a cada ~49.7 dias).
+// Retorna o "Unix" do RTC. ATENCAO: a lib RtcByMakuna usa epoch 2000,
+// nao o epoch 1970 do Unix tradicional. Mantemos isso internamente -
+// timestamps na EEPROM tambem usam epoch 2000.
 uint32_t nowUnix() {
-  if (!anchorSet) {
-    // Ancora nao foi capturada (RTC ausente ou leituras consistentemente
-    // corrompidas no boot). Cai no fallback de millis() puro.
-    return (millis() - bootMillis) / 1000UL;
+  if (rtcOk) {
+    RtcDateTime t = rtc.GetDateTime();
+    return t.TotalSeconds();   // segundos desde 2000-01-01
   }
-
-  unsigned long now_ms = millis();
-
-  // Wraparound de millis(): a cada ~49.7 dias o contador volta a zero.
-  // Quando isso acontece, now_ms fica MENOR que anchorMillis. Re-ancoramos
-  // pra recuperar a contagem absoluta de tempo a partir do RTC.
-  if (now_ms < anchorMillis) {
-    if (tryAnchor()) {
-      now_ms = millis();
-    } else {
-      // RTC indisponivel - mantemos a ultima ancora valida e retornamos
-      // o tempo dela como melhor estimativa. Proxima chamada tenta de novo.
-      return anchorRtcUtc.TotalSeconds();
-    }
-  }
-
-  uint32_t elapsed_sec = (now_ms - anchorMillis) / 1000UL;
-  return anchorRtcUtc.TotalSeconds() + elapsed_sec;
+  // Fallback: se RTC quebrou, usa millis() desde o boot. Nao e absoluto,
+  // mas pelo menos os logs ficam ordenados em sequencia relativa.
+  return (millis() - bootMillis) / 1000UL;
 }
 
 // Cria um RtcDateTime aplicando o offset de UTC para exibicao.
@@ -689,53 +599,51 @@ void renderHome() {
 }
 
 // Retorna o label do item de menu no idioma atual.
-// Layout do menu: %-9s%10s (9 chars label + 10 chars valor = 19 + 1 marker = 20).
 const char* menuLabel(uint8_t i) {
   if (cfg.language == 0) {           // PT
     switch (i) {
-      case 0: return "Unid.temp";
-      case 1: return "Idioma";
-      case 2: return "Buzzer";
-      case 3: return "Ver logs";
-      case 4: return "Limp.logs";
+      case 0: return "UTC offset";
+      case 1: return "Unidade temp";
+      case 2: return "Idioma";
+      case 3: return "Buzzer";
+      case 4: return "Ver logs";
       case 5: return "Sair";
     }
   } else if (cfg.language == 1) {    // EN
     switch (i) {
-      case 0: return "Temp unit";
-      case 1: return "Language";
-      case 2: return "Buzzer";
-      case 3: return "View logs";
-      case 4: return "Clear log";
+      case 0: return "UTC offset";
+      case 1: return "Temp unit";
+      case 2: return "Language";
+      case 3: return "Buzzer";
+      case 4: return "View logs";
       case 5: return "Exit";
     }
   } else {                            // ES
     switch (i) {
-      case 0: return "Unid.temp";
-      case 1: return "Idioma";
-      case 2: return "Buzzer";
-      case 3: return "Ver logs";
-      case 4: return "Borr.logs";
+      case 0: return "UTC offset";
+      case 1: return "Unidad temp";
+      case 2: return "Idioma";
+      case 3: return "Buzzer";
+      case 4: return "Ver logs";
       case 5: return "Salir";
     }
   }
   return "";
 }
 
-// Escreve em 'out' o valor atual do item i (ex: "C", "PT", "ON", ">").
-// Usa snprintf para garantir que nao estoure o buffer. Largura util = 10
-// chars (formato %10s no renderMenu).
+// Escreve em 'out' o valor atual do item i (ex: "+3", "C", "PT", "ON").
+// Usa snprintf para garantir que nao estoure o buffer.
 void menuValueAt(uint8_t i, char* out, uint8_t len) {
   switch (i) {
-    case 0: snprintf(out, len, "%c", cfg.tempUnit == 0 ? 'C' : 'F'); break;
-    case 1: {
+    case 0: snprintf(out, len, "%+d", cfg.utcOffset); break;
+    case 1: snprintf(out, len, "%c", cfg.tempUnit == 0 ? 'C' : 'F'); break;
+    case 2: {
       const char* langs[] = {"PT", "EN", "ES"};
       snprintf(out, len, "%s", langs[cfg.language]);
       break;
     }
-    case 2: snprintf(out, len, "%s", cfg.buzzerOn ? "ON" : "OFF"); break;
-    case 3: snprintf(out, len, ">"); break;     // entra em submenu
-    case 4: snprintf(out, len, ">"); break;     // acao: limpar logs
+    case 3: snprintf(out, len, "%s", cfg.buzzerOn ? "ON" : "OFF"); break;
+    case 4: snprintf(out, len, ">"); break;     // entra em submenu
     case 5: snprintf(out, len, ">"); break;     // sair
   }
 }
@@ -758,12 +666,11 @@ void renderMenu() {
       lcd.print(F("                    ")); continue;     // linha vazia
     }
     lcd.print(idx == menuIdx ? '>' : ' ');
-    char val[11];     // largura util 10 chars + null terminator
+    char val[6];
     menuValueAt(idx, val, sizeof(val));
     char line[21];
-    // %-9s = label esquerda alinhado em 9 chars; %10s = valor direita em 10
-    // Total: 1 ('>' marker) + 9 + 10 = 20 chars (exato da linha do LCD).
-    snprintf(line, sizeof(line), "%-9s%10s", menuLabel(idx), val);
+    // %-13s = label esquerda alinhado em 13 chars; %5s = valor direita em 5
+    snprintf(line, sizeof(line), "%-13s%5s", menuLabel(idx), val);
     lcd.print(line);
   }
 }
@@ -774,34 +681,22 @@ void menuAction(int8_t delta) {
   // delta == 0 = botao OK; UP/DOWN ja sao tratados como navegacao em handleButtons
   if (delta != 0) return;
   switch (menuIdx) {
-    case 0:  // Unidade temp: toggle C <-> F
+    case 0:  // UTC offset: incrementa de 1 em 1, wrap de +14 para -12
+      cfg.utcOffset++;
+      if (cfg.utcOffset > 14) cfg.utcOffset = -12;
+      break;
+    case 1:  // Unidade temp: toggle C <-> F
       cfg.tempUnit = !cfg.tempUnit;
       break;
-    case 1:  // Idioma: cicla PT -> EN -> ES -> PT
+    case 2:  // Idioma: cicla PT -> EN -> ES -> PT
       cfg.language = (cfg.language + 1) % 3;
       break;
-    case 2:  // Buzzer: toggle ON <-> OFF
+    case 3:  // Buzzer: toggle ON <-> OFF
       cfg.buzzerOn = !cfg.buzzerOn;
       break;
-    case 3:  // Ver logs
+    case 4:  // Ver logs
       appMode = MODE_LOGS;
       break;
-    case 4: {  // Limpar logs: zera o ring buffer e mostra confirmacao
-      logClearAll();
-      logViewIdx = 0;     // reseta o cursor de visualizacao
-      if (lcdOk) {
-        // Feedback visual: limpa a tela, mostra mensagem centralizada ~1s,
-        // depois limpa de novo para o proximo render do menu redesenhar.
-        lcd.clear();
-        lcd.setCursor(3, 1);
-        if (cfg.language == 0)      lcd.print(F("Logs apagados!"));
-        else if (cfg.language == 1) lcd.print(F(" Logs cleared!"));
-        else                        lcd.print(F("Logs borrados!"));
-        delay(1000);
-        lcd.clear();
-      }
-      break;
-    }
     case 5:  // Sair
       cfgSave();
       appMode = MODE_NORMAL;
@@ -994,6 +889,9 @@ void setup() {
 
   // ---- I2C (LCD) ----
   Wire.begin();
+
+  Serial.print(F("Inicializando LCD em 0x")); Serial.print(LCD_ADDR, HEX);
+  Serial.print(F("... "));
   lcd.init();
   lcd.backlight();
   // Carrega os 8 caracteres customizados na CGRAM do controlador HD44780.
@@ -1006,69 +904,85 @@ void setup() {
   lcd.createChar(ICO_OK,      chOk);
   lcd.createChar(ICO_ALERTA,  chAlerta);
   lcdOk = true;     // se travou aqui, e wiring/endereco
+  Serial.println(F("OK"));
 
   // ---- EEPROM (config) ----
+  Serial.print(F("Carregando config da EEPROM... "));
   cfgLoad();
+  Serial.println(F("OK"));
+
+  // ---- Joystick: leitura inicial (so para debug) ----
+  // Util para diagnosticar drift ou fiacao trocada logo no boot.
+  Serial.print(F("Joystick Y em repouso: "));
+  Serial.println(analogRead(PIN_JOY_Y));
 
   // ---- DHT11 ----
+  Serial.print(F("Inicializando DHT11... "));
   dht.begin();
+  Serial.println(F("OK"));
 
   // ---- RTC DS1302 ----
-  // Setup do RTC e a parte mais delicada do boot. Ordem CRITICA:
-  //   1) rtc.Begin()
-  //   2) Remover write-protect (DS1302 vem com WP ativo de fabrica!)
-  //   3) Habilitar oscilador (CH bit) se estiver parado
-  //   4) SO ENTAO chamar SetDateTime - antes disso a escrita falha em silencio
-  //      e deixa o RTC com hora "aleatoria" (lixo nos registradores).
+  // Setup do RTC e a parte mais delicada: precisamos lidar com bateria
+  // descarregada, write-protect e sincronizacao com a hora de compilacao.
+  Serial.print(F("Inicializando RTC DS1302... "));
   rtc.Begin();
 
-  // Passo 2: remove write-protect IMEDIATAMENTE apos Begin.
-  // Sem isso, qualquer SetDateTime/SetIsRunning subsequente vira no-op.
-  if (rtc.GetIsWriteProtected()) {
-    rtc.SetIsWriteProtected(false);
-  }
-  // Passo 3: garante que o oscilador esta rodando.
-  if (!rtc.GetIsRunning()) {
-    rtc.SetIsRunning(true);
-  }
-
-  // Passo 4: hora de compilacao em UTC (RTC armazena UTC).
-  // __DATE__/__TIME__ vem na hora local do PC (BRT -3 para Sao Paulo).
-  // Convertemos local -> UTC subtraindo o offset (cfg.utcOffset = -3 sempre).
+  // __DATE__/__TIME__ vem na hora local do PC (BRT no caso). O RTC deve
+  // armazenar UTC para que o offset do menu funcione corretamente.
+  // Convertemos local -> UTC subtraindo o offset configurado.
   RtcDateTime compileLocal = RtcDateTime(__DATE__, __TIME__);
   RtcDateTime compileTime(compileLocal.TotalSeconds() - (int32_t)cfg.utcOffset * 3600L);
 
-  // Decide se precisa ressincronizar o RTC:
-  //   a) hora invalida (bateria descarregada, primeira energizacao)
-  //   b) config foi renovada (magic byte mudou neste upload)
-  //   c) RTC esta atrasado em relacao a compilacao (sanity check)
-  if (!rtc.IsDateTimeValid() || freshConfig || rtc.GetDateTime() < compileTime) {
+  if (!rtc.IsDateTimeValid()) {
+    // RTC perdeu a hora (sem bateria ou bateria fraca)
+    Serial.println(F("hora invalida, ajustando pelo build"));
+    rtc.SetDateTime(compileTime);
+  } else if (freshConfig) {
+    // Config foi renovada (magic byte mudou) - forca re-sync da hora
+    Serial.println(F("config renovada, ressincronizando hora pelo build"));
+    rtc.SetDateTime(compileTime);
+  }
+
+  // Por padrao, o DS1302 vem com write-protect ativo. Precisa desligar
+  // para conseguir gravar a hora (e isso ja foi feito acima, mas garantia
+  // dupla nao machuca).
+  if (rtc.GetIsWriteProtected()) {
+    Serial.println(F("  removendo write protect..."));
+    rtc.SetIsWriteProtected(false);
+  }
+
+  // O CH (Clock Halt) bit pode estar setado se for primeira energizacao;
+  // precisa limpar para o oscilador comecar a contar.
+  if (!rtc.GetIsRunning()) {
+    Serial.println(F("  RTC parado, iniciando..."));
+    rtc.SetIsRunning(true);
+  }
+
+  // Sanidade extra: se a hora atual e anterior a compilacao, algo esta
+  // errado. Reajusta para o build time como fallback.
+  RtcDateTime now = rtc.GetDateTime();
+  if (now < compileTime) {
+    Serial.println(F("  hora antiga, ajustando pelo build"));
     rtc.SetDateTime(compileTime);
   }
 
   // Verifica final - se conseguiu ler hora valida, RTC esta OK
-  rtcOk = rtc.IsDateTimeValid();
-  // Captura a ancora de tempo. Estrategia em duas camadas:
-  //   1) Tenta ancorar do RTC (tryAnchor exige 2 leituras consistentes).
-  //   2) Se isso falhar - RTC ausente, bateria morta, leituras flakey -
-  //      ancora no tempo de compilacao. Isso garante que anchorSet sempre
-  //      seja true depois do setup, evitando o bug de underflow do
-  //      nowLocal() que mostra ano 2136 quando a ancora nao existe.
-  bool anchored = false;
-  if (rtcOk) {
-    anchored = tryAnchor();
-  }
-  if (!anchored) {
-    // Fallback: compileTime ja foi convertido para UTC algumas linhas acima.
-    // Usa esse valor diretamente como ancora. O tempo mostrado sera o
-    // momento do upload do codigo + alguns segundos de boot - aceitavel.
-    anchorRtcUtc = compileTime;
-    anchorMillis = millis();
-    anchorSet    = true;
+  if (rtc.IsDateTimeValid()) {
+    rtcOk = true;
+    char hb[24];
+    now = rtc.GetDateTime();
+    snprintf(hb, sizeof(hb), "OK [%02d/%02d/%04d %02d:%02d:%02d]",
+             now.Day(), now.Month(), now.Year(),
+             now.Hour(), now.Minute(), now.Second());
+    Serial.println(hb);
+  } else {
+    rtcOk = false;
+    Serial.println(F("FALHA - usando millis() como timestamp"));
   }
   bootMillis = millis();     // ponto zero para fallback de timestamp
 
   // ---- Animacao de boot ----
+  Serial.println(F("\nIniciando animacao de boot...\n"));
   bootAnimation();
 
   // Pos-boot: o slot 1 (que segurou ICO_BOTTLE2 durante a animacao) e
@@ -1084,6 +998,7 @@ void setup() {
 
   // Inicializa os timers do loop principal.
   tLastSample = tLastWindow = tLastLog = millis();
+  Serial.println(F("Sistema pronto. Loop principal iniciado.\n"));
 }
 
 // loop() roda continuamente apos o setup. Nao usa delay() longo - tudo
@@ -1117,7 +1032,7 @@ void loop() {
     sensorSample();
   }
 
-  // ---- Janela de 5s: consolida medias e atualiza alerta ----
+  // ---- Janela de 10s: consolida medias e atualiza alerta ----
   if (now - tLastWindow >= (unsigned long)WINDOW_S * 1000UL) {
     tLastWindow = now;
     windowFinalize();
