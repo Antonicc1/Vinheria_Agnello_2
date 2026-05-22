@@ -43,8 +43,8 @@ const uint16_t BUZZ_VERMELHO = 1000;
 const uint16_t JOY_CENTER     = 512;
 const uint16_t JOY_DEADZONE   = 200;
 
-const uint8_t  EEP_MAGIC      = 0xB3;
-const uint16_t EEP_ADDR_CFG   = 0;
+const uint8_t  EEP_MAGIC      = 0xB1;
+const uint16_t EEP_ADDR_CFG   = 0;    
 const uint16_t EEP_ADDR_LOGN  = 16;
 const uint16_t EEP_ADDR_HEAD  = 18;
 const uint16_t EEP_ADDR_LOGS  = 32;
